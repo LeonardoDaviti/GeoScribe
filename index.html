@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GeoScribe — Parametric Georgian Handwriting Generator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Georgian:wght@100..900&family=Noto+Serif+Georgian:wght@100..900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --panel: #171a23;
+    --panel2: #1d2130;
+    --border: #2a2f42;
+    --text: #e8eaf2;
+    --muted: #8b91a7;
+    --accent: #e8543f;
+    --accent2: #4f8ef7;
+    --mono: ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    padding: 28px 32px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+  header h1 .geo { color: var(--accent); }
+  header .sub { color: var(--muted); font-size: 13px; }
+  .layout { display: grid; grid-template-columns: 340px 1fr; gap: 0; min-height: calc(100vh - 70px); }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+
+  /* ---- Controls panel ---- */
+  .controls {
+    background: var(--panel); border-right: 1px solid var(--border);
+    padding: 20px; overflow-y: auto; max-height: calc(100vh - 70px);
+  }
+  .group { margin-bottom: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel2); }
+  .group > summary {
+    padding: 10px 14px; cursor: pointer; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 1px; color: var(--muted);
+    list-style: none; user-select: none;
+  }
+  .group > summary::before { content: '▸ '; color: var(--accent); }
+  .group[open] > summary::before { content: '▾ '; }
+  .group .body { padding: 4px 14px 14px; }
+  .knob { margin: 10px 0; }
+  .knob label {
+    display: flex; justify-content: space-between; font-size: 12px; color: var(--text);
+    margin-bottom: 4px;
+  }
+  .knob label .val { font-family: var(--mono); color: var(--accent2); font-size: 11px; }
+  .knob input[type=range] {
+    width: 100%; accent-color: var(--accent); height: 4px;
+  }
+  textarea, select, input[type=number], input[type=text] {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 9px 10px; font-size: 14px; font-family: inherit;
+  }
+  textarea { font-family: 'Noto Sans Georgian', sans-serif; font-size: 16px; resize: vertical; min-height: 74px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    padding: 10px 14px; font-size: 13px; font-weight: 600; cursor: pointer; width: 100%;
+    transition: filter .15s;
+  }
+  .btn:hover { filter: brightness(1.12); }
+  .btn.secondary { background: var(--panel2); border: 1px solid var(--border); color: var(--text); }
+  .btn.blue { background: var(--accent2); }
+  .btnrow { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+  .checkline { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 8px 0; }
+  .checkline input { accent-color: var(--accent); }
+
+  /* ---- Canvas area ---- */
+  .stage {
+    padding: 26px 32px; display: flex; flex-direction: column; gap: 18px; overflow-y: auto;
+    max-height: calc(100vh - 70px);
+  }
+  .canvas-wrap {
+    background: #fff; border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.5);
+    padding: 0; overflow-x: auto; align-self: flex-start; max-width: 100%;
+  }
+  canvas { display: block; }
+  .presets { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 999px; padding: 6px 14px; font-size: 12px; cursor: pointer; transition: all .15s;
+  }
+  .chip:hover, .chip.active { border-color: var(--accent); color: var(--text); }
+  .status { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+  .footer-note { color: var(--muted); font-size: 12px; line-height: 1.6; max-width: 720px; }
+  .footer-note a { color: var(--accent2); }
+  progress { width: 100%; accent-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="geo">Geo</span>Scribe</h1>
+  <span class="sub">parametric Mkhedruli handwriting synthesis · Stage A: glyph-space deformations · runs 100% in your browser</span>
+</header>
+
+<div class="layout">
+  <aside class="controls">
+
+    <div class="knob" style="margin-top:0">
+      <label>Text (Georgian)</label>
+      <textarea id="text">ხელნაწერი ტექსტის სინთეზი ქართული ენისთვის — ყველაფერი მათემატიკურად შესაძლებელია</textarea>
+    </div>
+
+    <div class="knob">
+      <label>Font</label>
+      <select id="font">
+        <option value="'Noto Sans Georgian'">Noto Sans Georgian</option>
+        <option value="'Noto Serif Georgian'">Noto Serif Georgian</option>
+      </select>
+    </div>
+    <div class="row2">
+      <div class="knob"><label>Weight <span class="val" id="v_weight">400</span></label>
+        <input type="range" id="weight" min="100" max="900" step="100" value="400"></div>
+      <div class="knob"><label>Size px <span class="val" id="v_fontsize">64</span></label>
+        <input type="range" id="fontsize" min="28" max="120" step="2" value="64"></div>
+    </div>
+
+    <details class="group" open>
+      <summary>Per-glyph affine</summary>
+      <div class="body">
+        <div class="knob"><label>Rotation jitter ±° <span class="val" id="v_rot">4</span></label>
+          <input type="range" id="rot" min="0" max="15" step="0.5" value="4"></div>
+        <div class="knob"><label>Scale jitter ± <span class="val" id="v_scale">0.08</span></label>
+          <input type="range" id="scale" min="0" max="0.35" step="0.01" value="0.08"></div>
+        <div class="knob"><label>Shear jitter ± <span class="val" id="v_shear">0.12</span></label>
+          <input type="range" id="shear" min="0" max="0.5" step="0.01" value="0.12"></div>
+        <div class="knob"><label>Global slant <span class="val" id="v_slant">0.08</span></label>
+          <input type="range" id="slant" min="-0.4" max="0.4" step="0.01" value="0.08"></div>
+      </div>
+    </details>
+
+    <details class="group" open>
+      <summary>Spacing &amp; baseline</summary>
+      <div class="body">
+        <div class="knob"><label>Kerning jitter σ (em) <span class="val" id="v_kern">0.04</span></label>
+          <input type="range" id="kern" min="0" max="0.2" step="0.005" value="0.04"></div>
+        <div class="knob"><label>Overlap probability <span class="val" id="v_overlap">0.25</span></label>
+          <input type="range" id="overlap" min="0" max="1" step="0.05" value="0.25"></div>
+        <div class="knob"><label>Overlap depth (em) <span class="val" id="v_overlapdepth">0.08</span></label>
+          <input type="range" id="overlapdepth" min="0" max="0.3" step="0.01" value="0.08"></div>
+        <div class="knob"><label>Baseline sine amp px <span class="val" id="v_baseamp">4</span></label>
+          <input type="range" id="baseamp" min="0" max="20" step="0.5" value="4"></div>
+        <div class="knob"><label>Baseline sine period px <span class="val" id="v_baseperiod">340</span></label>
+          <input type="range" id="baseperiod" min="80" max="900" step="10" value="340"></div>
+        <div class="knob"><label>Baseline random-walk σ <span class="val" id="v_basewalk">0.9</span></label>
+          <input type="range" id="basewalk" min="0" max="4" step="0.1" value="0.9"></div>
+      </div>
+    </details>
+
+    <details class="group" open>
+      <summary>Elastic distortion</summary>
+      <div class="body">
+        <div class="knob"><label>Amplitude α px <span class="val" id="v_elasticamp">6</span></label>
+          <input type="range" id="elasticamp" min="0" max="25" step="0.5" value="6"></div>
+        <div class="knob"><label>Smoothness σ px <span class="val" id="v_elasticsigma">14</span></label>
+          <input type="range" id="elasticsigma" min="3" max="40" step="1" value="14"></div>
+      </div>
+    </details>
+
+    <details class="group">
+      <summary>Stroke &amp; ink model</summary>
+      <div class="body">
+        <div class="knob"><label>Stroke width (erode−/dilate+) <span class="val" id="v_stroke">0</span></label>
+          <input type="range" id="stroke" min="-2" max="3" step="1" value="0"></div>
+        <div class="knob"><label>Per-glyph stroke jitter prob <span class="val" id="v_strokejit">0.3</span></label>
+          <input type="range" id="strokejit" min="0" max="1" step="0.05" value="0.3"></div>
+        <div class="knob"><label>Ink darkness jitter <span class="val" id="v_inkjit">0.25</span></label>
+          <input type="range" id="inkjit" min="0" max="0.7" step="0.05" value="0.25"></div>
+        <div class="knob"><label>Edge bleed (blur px) <span class="val" id="v_bleed">0.6</span></label>
+          <input type="range" id="bleed" min="0" max="3" step="0.1" value="0.6"></div>
+        <div class="knob"><label>Ink hue</label>
+          <select id="inkcolor">
+            <option value="#1a1c2e">Blue-black</option>
+            <option value="#101014">Black</option>
+            <option value="#1b3a8f">Ballpoint blue</option>
+            <option value="#3a2a1a">Sepia</option>
+          </select></div>
+      </div>
+    </details>
+
+    <details class="group">
+      <summary>Paper</summary>
+      <div class="body">
+        <div class="knob"><label>Paper texture noise <span class="val" id="v_papernoise">0.05</span></label>
+          <input type="range" id="papernoise" min="0" max="0.25" step="0.01" value="0.05"></div>
+        <div class="checkline"><input type="checkbox" id="ruled"> <label for="ruled">Ruled lines</label></div>
+        <div class="knob"><label>Paper tint</label>
+          <select id="papertint">
+            <option value="#fdfcf8">Warm white</option>
+            <option value="#ffffff">Pure white</option>
+            <option value="#f6f1e4">Aged cream</option>
+            <option value="#eef2f6">Cool grey</option>
+          </select></div>
+      </div>
+    </details>
+
+    <div class="row2">
+      <div class="knob"><label>Seed <span class="val" id="v_seed"></span></label>
+        <input type="number" id="seed" value="1337"></div>
+      <div class="knob"><label>Batch size</label>
+        <input type="number" id="batchn" value="50" min="1" max="2000"></div>
+    </div>
+
+    <button class="btn" id="regen">🎲 New seed &amp; render</button>
+    <div class="btnrow">
+      <button class="btn secondary" id="download">⬇ PNG</button>
+      <button class="btn blue" id="batch">📦 Dataset .zip</button>
+    </div>
+    <div style="margin-top:10px"><progress id="prog" value="0" max="1" style="display:none"></progress></div>
+    <p class="status" id="status" style="margin-top:10px"></p>
+  </aside>
+
+  <main class="stage">
+    <div class="presets">
+      <span class="chip" data-preset="clean">clean print</span>
+      <span class="chip active" data-preset="neat">neat hand</span>
+      <span class="chip" data-preset="casual">casual hand</span>
+      <span class="chip" data-preset="rushed">rushed scrawl</span>
+      <span class="chip" data-preset="drunk">chaotic</span>
+    </div>
+    <div class="canvas-wrap"><canvas id="canvas"></canvas></div>
+    <p class="footer-note">
+      Every knob is a distribution parameter. The pipeline: each Mkhedruli character is rendered
+      to its own bitmap → random affine (rotation, scale, shear) → composed with kerning jitter and
+      occasional negative spacing (fake ligatures) along a baseline that drifts as sine + random walk →
+      the whole line passes through a smooth random displacement field (Gaussian-filtered noise, the
+      classic elastic-distortion trick) → morphological erode/dilate varies stroke width → an ink model
+      adds per-glyph darkness variation and edge bleed onto textured paper.
+      Batch export writes <code>images/*.png</code> + <code>labels.jsonl</code> + <code>params.json</code> —
+      ready for HTR training. Static page, no server: hostable on GitHub Pages.
+    </p>
+  </main>
+</div>
+
+<script>
+'use strict';
+
+/* ---------------- Seeded RNG (mulberry32) ---------------- */
+function mulberry32(a) {
+  return function() {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+let rng = mulberry32(1337);
+const rand = () => rng();
+const randn = () => { // Box–Muller
+  let u = 0, v = 0;
+  while (u === 0) u = rand();
+  while (v === 0) v = rand();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+};
+const uniform = (a, b) => a + rand() * (b - a);
+
+/* ---------------- Params ---------------- */
+const SLIDERS = ['weight','fontsize','rot','scale','shear','slant','kern','overlap','overlapdepth',
+  'baseamp','baseperiod','basewalk','elasticamp','elasticsigma','stroke','strokejit','inkjit','bleed','papernoise'];
+function readParams() {
+  const p = {};
+  for (const id of SLIDERS) p[id] = parseFloat(document.getElementById(id).value);
+  p.font = document.getElementById('font').value;
+  p.inkcolor = document.getElementById('inkcolor').value;
+  p.papertint = document.getElementById('papertint').value;
+  p.ruled = document.getElementById('ruled').checked;
+  p.text = document.getElementById('text').value;
+  p.seed = parseInt(document.getElementById('seed').value) || 0;
+  return p;
+}
+
+const PRESETS = {
+  clean:  { rot:1,  scale:0.03, shear:0.03, slant:0,    kern:0.01, overlap:0,    overlapdepth:0,    baseamp:1,  basewalk:0.2, elasticamp:1.5, elasticsigma:20, strokejit:0.1, inkjit:0.1,  bleed:0.3 },
+  neat:   { rot:4,  scale:0.08, shear:0.12, slant:0.08, kern:0.04, overlap:0.25, overlapdepth:0.08, baseamp:4,  basewalk:0.9, elasticamp:6,   elasticsigma:14, strokejit:0.3, inkjit:0.25, bleed:0.6 },
+  casual: { rot:7,  scale:0.13, shear:0.2,  slant:0.14, kern:0.07, overlap:0.45, overlapdepth:0.12, baseamp:7,  basewalk:1.6, elasticamp:9,   elasticsigma:12, strokejit:0.5, inkjit:0.35, bleed:0.9 },
+  rushed: { rot:10, scale:0.18, shear:0.3,  slant:0.22, kern:0.11, overlap:0.65, overlapdepth:0.18, baseamp:10, basewalk:2.4, elasticamp:13,  elasticsigma:9,  strokejit:0.7, inkjit:0.45, bleed:1.2 },
+  drunk:  { rot:15, scale:0.3,  shear:0.45, slant:0.3,  kern:0.17, overlap:0.85, overlapdepth:0.26, baseamp:16, basewalk:3.6, elasticamp:20,  elasticsigma:7,  strokejit:0.9, inkjit:0.6,  bleed:1.8 },
+};
+
+/* ---------------- Separable Gaussian blur on a Float32 field ---------------- */
+function gaussianKernel(sigma) {
+  const r = Math.max(1, Math.ceil(sigma * 2.5));
+  const k = new Float32Array(2 * r + 1);
+  let s = 0;
+  for (let i = -r; i <= r; i++) { k[i + r] = Math.exp(-i * i / (2 * sigma * sigma)); s += k[i + r]; }
+  for (let i = 0; i < k.length; i++) k[i] /= s;
+  return { k, r };
+}
+function blurField(src, w, h, sigma) {
+  const { k, r } = gaussianKernel(sigma);
+  const tmp = new Float32Array(w * h), dst = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let s = 0;
+    for (let i = -r; i <= r; i++) {
+      const xx = Math.min(w - 1, Math.max(0, x + i));
+      s += src[y * w + xx] * k[i + r];
+    }
+    tmp[y * w + x] = s;
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let s = 0;
+    for (let i = -r; i <= r; i++) {
+      const yy = Math.min(h - 1, Math.max(0, y + i));
+      s += tmp[yy * w + x] * k[i + r];
+    }
+    dst[y * w + x] = s;
+  }
+  return dst;
+}
+
+/* ---------------- Elastic warp: backward map with bilinear sampling ----------------
+   Field computed at 1/4 resolution for speed, upsampled implicitly by scaling coords. */
+function elasticWarp(imgData, w, h, alpha, sigma) {
+  if (alpha <= 0) return imgData;
+  const ds = 4, fw = Math.ceil(w / ds), fh = Math.ceil(h / ds);
+  let dx = new Float32Array(fw * fh), dy = new Float32Array(fw * fh);
+  for (let i = 0; i < fw * fh; i++) { dx[i] = rand() * 2 - 1; dy[i] = rand() * 2 - 1; }
+  const fs = Math.max(0.8, sigma / ds);
+  dx = blurField(dx, fw, fh, fs); dy = blurField(dy, fw, fh, fs);
+  // normalize so max magnitude ≈ alpha
+  let m = 1e-6;
+  for (let i = 0; i < fw * fh; i++) m = Math.max(m, Math.abs(dx[i]), Math.abs(dy[i]));
+  const g = alpha / m;
+
+  const src = imgData.data;
+  const out = new Uint8ClampedArray(src.length);
+  out.fill(0);
+  for (let y = 0; y < h; y++) {
+    const fy = Math.min(fh - 1, y / ds);
+    for (let x = 0; x < w; x++) {
+      const fx = Math.min(fw - 1, x / ds);
+      // bilinear sample of the field
+      const x0 = fx | 0, y0 = fy | 0, x1 = Math.min(fw - 1, x0 + 1), y1 = Math.min(fh - 1, y0 + 1);
+      const tx = fx - x0, ty = fy - y0;
+      const idx00 = y0 * fw + x0, idx10 = y0 * fw + x1, idx01 = y1 * fw + x0, idx11 = y1 * fw + x1;
+      const ddx = (dx[idx00]*(1-tx)+dx[idx10]*tx)*(1-ty) + (dx[idx01]*(1-tx)+dx[idx11]*tx)*ty;
+      const ddy = (dy[idx00]*(1-tx)+dy[idx10]*tx)*(1-ty) + (dy[idx01]*(1-tx)+dy[idx11]*tx)*ty;
+      const sx = x + ddx * g, sy = y + ddy * g;
+      if (sx < 0 || sy < 0 || sx >= w - 1 || sy >= h - 1) continue;
+      const sx0 = sx | 0, sy0 = sy | 0, stx = sx - sx0, sty = sy - sy0;
+      const o = (y * w + x) * 4;
+      for (let c = 0; c < 4; c++) {
+        const p00 = src[(sy0 * w + sx0) * 4 + c], p10 = src[(sy0 * w + sx0 + 1) * 4 + c];
+        const p01 = src[((sy0 + 1) * w + sx0) * 4 + c], p11 = src[((sy0 + 1) * w + sx0 + 1) * 4 + c];
+        out[o + c] = (p00*(1-stx)+p10*stx)*(1-sty) + (p01*(1-stx)+p11*stx)*sty;
+      }
+    }
+  }
+  return new ImageData(out, w, h);
+}
+
+/* ---------------- Morphological erode/dilate on alpha channel ---------------- */
+function morphAlpha(imgData, w, h, op) { // op: +1 dilate, -1 erode, one 3x3 pass
+  const src = imgData.data;
+  const out = new Uint8ClampedArray(src);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let best = op > 0 ? 0 : 255;
+    for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+      const yy = Math.min(h-1, Math.max(0, y+j)), xx = Math.min(w-1, Math.max(0, x+i));
+      const a = src[(yy * w + xx) * 4 + 3];
+      best = op > 0 ? Math.max(best, a) : Math.min(best, a);
+    }
+    out[(y * w + x) * 4 + 3] = best;
+  }
+  return new ImageData(out, w, h);
+}
+
+/* ---------------- Main render ---------------- */
+function hexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function renderLine(p, targetCanvas) {
+  rng = mulberry32(p.seed);
+  const fs = p.fontsize;
+  const chars = [...p.text.replace(/\n/g, ' ')];
+  const pad = Math.ceil(fs * 0.9);
+  const glyphPad = Math.ceil(fs * 0.6);
+
+  // 1. Measure & render each glyph to its own canvas with random affine
+  const meas = document.createElement('canvas').getContext('2d');
+  meas.font = `${p.weight} ${fs}px ${p.font}`;
+  const glyphs = [];
+  for (const ch of chars) {
+    if (ch === ' ') { glyphs.push({ space: true, adv: fs * uniform(0.3, 0.5) }); continue; }
+    const m = meas.measureText(ch);
+    const gw = Math.ceil(m.width) + glyphPad * 2, gh = Math.ceil(fs * 1.8) + glyphPad * 2;
+    const gc = document.createElement('canvas');
+    gc.width = gw; gc.height = gh;
+    const g = gc.getContext('2d');
+    g.font = `${p.weight} ${fs}px ${p.font}`;
+    g.textBaseline = 'alphabetic';
+    // affine about glyph center
+    const cx = gw / 2, cy = gh / 2;
+    const rot = randn() * p.rot * Math.PI / 180 / 2;      // σ = rot/2 → ±rot ≈ 2σ
+    const sc  = 1 + randn() * p.scale / 2;
+    const shx = p.slant + randn() * p.shear / 2;
+    g.translate(cx, cy);
+    g.rotate(rot);
+    g.scale(sc, sc * (1 + randn() * p.scale / 3));
+    g.transform(1, 0, -shx, 1, 0, 0);
+    g.translate(-cx, -cy);
+    g.fillStyle = '#000';
+    g.fillText(ch, glyphPad, gh / 2 + fs * 0.35);
+    // per-glyph stroke width jitter
+    if (rand() < p.strokejit) {
+      const op = rand() < 0.5 ? -1 : 1;
+      const id = g.getImageData(0, 0, gw, gh);
+      g.putImageData(morphAlpha(id, gw, gh, op), 0, 0);
+    }
+    glyphs.push({ canvas: gc, adv: m.width, pad: glyphPad });
+  }
+
+  // 2. Compose along drifting baseline with kerning jitter / overlaps
+  let x = pad, walk = 0;
+  const placements = [];
+  const phase = rand() * Math.PI * 2;
+  for (const gl of glyphs) {
+    if (gl.space) { x += gl.adv + randn() * p.kern * fs; continue; }
+    walk += randn() * p.basewalk;
+    walk *= 0.94; // mean-reverting so it doesn't run off the page
+    const y = pad + fs * 1.1
+      + p.baseamp * Math.sin(2 * Math.PI * x / p.baseperiod + phase)
+      + walk;
+    placements.push({ gl, x: x - gl.pad, y: y - fs * 1.25 });
+    let adv = gl.adv + randn() * p.kern * fs;
+    if (rand() < p.overlap) adv -= p.overlapdepth * fs * uniform(0.5, 1.5);
+    x += Math.max(fs * 0.1, adv);
+  }
+  const W = Math.ceil(x + pad), H = Math.ceil(fs * 2.2 + pad * 2);
+
+  // ink layer (black on transparent)
+  const ink = document.createElement('canvas');
+  ink.width = W; ink.height = H;
+  const ic = ink.getContext('2d');
+  for (const pl of placements) {
+    ic.globalAlpha = Math.min(1, Math.max(0.25, 1 - Math.abs(randn()) * p.inkjit));
+    ic.drawImage(pl.gl.canvas, pl.x, pl.y);
+  }
+  ic.globalAlpha = 1;
+
+  // 3. Global stroke width
+  let id = ic.getImageData(0, 0, W, H);
+  const strokeN = Math.round(p.stroke);
+  for (let i = 0; i < Math.abs(strokeN); i++) id = morphAlpha(id, W, H, Math.sign(strokeN));
+
+  // 4. Elastic distortion
+  id = elasticWarp(id, W, H, p.elasticamp, p.elasticsigma);
+  ic.putImageData(id, 0, 0);
+
+  // 5. Composite: paper + ruled lines + ink (tinted, with bleed)
+  targetCanvas.width = W; targetCanvas.height = H;
+  const ctx = targetCanvas.getContext('2d');
+  ctx.fillStyle = p.papertint;
+  ctx.fillRect(0, 0, W, H);
+  // paper noise
+  if (p.papernoise > 0) {
+    const pd = ctx.getImageData(0, 0, W, H);
+    for (let i = 0; i < pd.data.length; i += 4) {
+      const n = (rand() - 0.5) * 2 * p.papernoise * 255;
+      pd.data[i] += n; pd.data[i+1] += n; pd.data[i+2] += n;
+    }
+    ctx.putImageData(pd, 0, 0);
+  }
+  if (p.ruled) {
+    ctx.strokeStyle = 'rgba(90,130,200,0.35)';
+    ctx.lineWidth = 1;
+    const baseY = pad + fs * 1.1;
+    ctx.beginPath(); ctx.moveTo(0, baseY + fs * 0.15); ctx.lineTo(W, baseY + fs * 0.15); ctx.stroke();
+  }
+  // tint ink
+  const [ir, ig2, ib] = hexToRgb(p.inkcolor);
+  const inkTinted = document.createElement('canvas');
+  inkTinted.width = W; inkTinted.height = H;
+  const tc = inkTinted.getContext('2d');
+  tc.drawImage(ink, 0, 0);
+  tc.globalCompositeOperation = 'source-in';
+  tc.fillStyle = `rgb(${ir},${ig2},${ib})`;
+  tc.fillRect(0, 0, W, H);
+
+  if (p.bleed > 0) {
+    ctx.save();
+    ctx.filter = `blur(${p.bleed}px)`;
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(inkTinted, 0, 0);
+    ctx.restore();
+  }
+  ctx.drawImage(inkTinted, 0, 0);
+}
+
+/* ---------------- UI wiring ---------------- */
+const canvas = document.getElementById('canvas');
+const statusEl = document.getElementById('status');
+
+function updateLabels() {
+  for (const id of SLIDERS) {
+    const el = document.getElementById('v_' + id);
+    if (el) el.textContent = document.getElementById(id).value;
+  }
+}
+let renderTimer = null;
+function render() {
+  updateLabels();
+  const t0 = performance.now();
+  renderLine(readParams(), canvas);
+  statusEl.textContent = `rendered ${canvas.width}×${canvas.height} in ${(performance.now() - t0).toFixed(0)} ms · seed ${readParams().seed}`;
+}
+function scheduleRender() {
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(render, 60);
+}
+for (const id of [...SLIDERS, 'font', 'inkcolor', 'papertint', 'seed']) {
+  document.getElementById(id).addEventListener('input', scheduleRender);
+}
+document.getElementById('ruled').addEventListener('change', scheduleRender);
+document.getElementById('text').addEventListener('input', scheduleRender);
+
+document.getElementById('regen').addEventListener('click', () => {
+  document.getElementById('seed').value = Math.floor(Math.random() * 1e9);
+  render();
+});
+
+document.getElementById('download').addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.download = `geoscribe_${readParams().seed}.png`;
+  a.href = canvas.toDataURL('image/png');
+  a.click();
+});
+
+/* presets */
+document.querySelectorAll('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    const pr = PRESETS[chip.dataset.preset];
+    for (const [k, v] of Object.entries(pr)) {
+      const el = document.getElementById(k);
+      if (el) el.value = v;
+    }
+    render();
+  });
+});
+
+/* ---------------- Batch dataset export ---------------- */
+const SAMPLE_WORDS = ('ხელნაწერი ტექსტი ქართული ენა ანბანი მთაწმინდა თბილისი საქართველო წიგნი ' +
+  'სიყვარული მეგობარი ბუნება მთა ზღვა მდინარე ქალაქი სოფელი გზა სახლი ოჯახი ბავშვი სკოლა ' +
+  'უნივერსიტეტი მეცნიერება ხელოვნება მუსიკა პოეზია ისტორია მომავალი წარსული აწმყო ღვინო პური ' +
+  'წყალი ცეცხლი მიწა ჰაერი ვარსკვლავი მთვარე მზე ღრუბელი წვიმა თოვლი ქარი ყვავილი ხე ფოთოლი ' +
+  'ჩიტი თევზი ცხენი ძაღლი კატა ადამიანი გული გონება სული ენა სიტყვა ასო ხმა ფერი შუქი ჩრდილი').split(' ');
+
+document.getElementById('batch').addEventListener('click', async () => {
+  const n = Math.min(2000, Math.max(1, parseInt(document.getElementById('batchn').value) || 50));
+  const zip = new JSZip();
+  const imgs = zip.folder('images');
+  const base = readParams();
+  const labels = [];
+  const prog = document.getElementById('prog');
+  prog.style.display = 'block';
+  const off = document.createElement('canvas');
+  for (let i = 0; i < n; i++) {
+    const p = { ...base };
+    p.seed = Math.floor(Math.random() * 1e9);
+    // sample a random 2–5 word line for label diversity
+    const nw = 2 + Math.floor(Math.random() * 4);
+    const words = [];
+    for (let w = 0; w < nw; w++) words.push(SAMPLE_WORDS[Math.floor(Math.random() * SAMPLE_WORDS.length)]);
+    p.text = words.join(' ');
+    renderLine(p, off);
+    const blob = await new Promise(res => off.toBlob(res, 'image/png'));
+    const fname = `${String(i).padStart(5, '0')}.png`;
+    imgs.file(fname, blob);
+    labels.push(JSON.stringify({ file: 'images/' + fname, text: p.text, seed: p.seed }));
+    prog.value = (i + 1) / n;
+    if (i % 5 === 0) await new Promise(r => setTimeout(r, 0)); // keep UI alive
+  }
+  zip.file('labels.jsonl', labels.join('\n'));
+  zip.file('params.json', JSON.stringify(base, null, 2));
+  const blob = await zip.generateAsync({ type: 'blob' });
+  const a = document.createElement('a');
+  a.download = `geoscribe_dataset_${n}.zip`;
+  a.href = URL.createObjectURL(blob);
+  a.click();
+  prog.style.display = 'none';
+  statusEl.textContent = `dataset exported: ${n} samples + labels.jsonl`;
+});
+
+/* initial render once fonts are ready */
+document.fonts.ready.then(() => setTimeout(render, 50));
+render();
+</script>
+</body>
+</html>
