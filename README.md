@@ -69,10 +69,19 @@ trajectories — real (x, y, t) online handwriting data, not pixels:
 - `labels.jsonl` records `source` (hand/font) and `writer` per sample, enabling
   **writer-disjoint splits** downstream — required for a credible benchmark.
 
+### Stage B+: cursive joining (implemented)
+
+Adjacent hand-drawn letters within a word can connect: a Bernoulli connect-vs-lift
+decision per letter pair — `P(connect) = knob × exp(−1.3·|Δy| − 2·max(0, gap−0.7))`,
+penalizing vertical travel (Mkhedruli has 13 ascenders + 13 descenders) — then a
+G1-continuous cubic Bézier bridge along the exit/entry tangents (handles = gap/3),
+drawn thinner (fast transit stroke) before elastic/ink processing so joins age with
+the rest of the line. The `cursive joining` knob sweeps formal print-hand (0) to
+flowing diary-hand (1) — the two registers documented for Georgian handwriting.
+
 ## Roadmap
 
-- **Stage B+** — joining splines between letter exit/entry points (true cursive);
-  per-letter mean-shape + covariance estimation once ≥5 samples exist.
+- Per-letter mean-shape + covariance estimation once ≥5 samples exist.
 - **Stage C** — small trajectory RNN/diffusion trained on parametric + real scanned samples.
 
 ## Fonts

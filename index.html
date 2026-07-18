@@ -261,6 +261,8 @@
           <input type="range" id="penw" min="0.02" max="0.14" step="0.005" value="0.055"></div>
         <div class="knob"><label>Speed thinning <span class="val" id="v_speedthin">0.5</span></label>
           <input type="range" id="speedthin" min="0" max="1" step="0.05" value="0.5"></div>
+        <div class="knob"><label>Cursive joining (0 = formal, 1 = diary) <span class="val" id="v_connectprob">0.35</span></label>
+          <input type="range" id="connectprob" min="0" max="1" step="0.05" value="0.35"></div>
         <button class="btn secondary" id="opendraw" style="margin-top:6px">✍ Open drawing board</button>
         <div class="btnrow">
           <button class="btn secondary" id="exportprofile">⬆ Export JSON</button>
@@ -320,6 +322,8 @@
             <button class="btn secondary" id="undostroke" style="width:auto">↩ undo</button>
             <button class="btn secondary" id="clearstroke" style="width:auto">✕ clear</button>
           </div>
+          <p class="status" id="galcount" style="margin-top:12px"></p>
+          <div id="samplegallery" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:6px; max-width:680px;"></div>
         </div>
         <div style="max-width:330px">
           <p style="font-size:34px; margin-bottom:6px">target: <span id="targetletter" style="font-family:'Noto Sans Georgian'; color:var(--accent)">ა</span>
@@ -331,6 +335,7 @@
             morphs between random pairs of your samples and adds smooth correlated noise.
           </p>
           <div class="checkline"><input type="checkbox" id="autoadvance" checked> <label for="autoadvance">auto-advance to next letter after save</label></div>
+          <div class="checkline"><input type="checkbox" id="ghost" checked> <label for="ghost">show previous drawings as ghosts while drawing</label></div>
           <button class="btn secondary" id="wipeprofile" style="margin-top:8px">🗑 delete all my samples</button>
           <p class="status" id="drawstatus" style="margin-top:8px"></p>
         </div>
@@ -424,7 +429,7 @@ function loadLocalFonts() {
 /* ---------------- Params ---------------- */
 const SLIDERS = ['weight','fontsize','rot','scale','shear','slant','kern','overlap','overlapdepth',
   'baseamp','baseperiod','basewalk','elasticamp','elasticsigma','stroke','strokejit','inkjit','bleed','papernoise',
-  'handjitter','penw','speedthin','handprob'];
+  'handjitter','penw','speedthin','handprob','connectprob'];
 function readParams() {
   const p = {};
   for (const id of SLIDERS) p[id] = parseFloat(document.getElementById(id).value);
@@ -744,6 +749,7 @@ function hexToRgb(hex) {
   const n = parseInt(hex.slice(1), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
+function norm2(x, y) { const l = Math.hypot(x, y) || 1; return { x: x / l, y: y / l }; }
 
 function pickFontDef(p) {
   const pool = HAND_FONTS.filter(f => !f.failed);
@@ -838,9 +844,10 @@ function renderLine(p, targetCanvas) {
     const rot = randn() * p.rot * Math.PI / 180 / 2 * damp;      // σ = rot/2 → ±rot ≈ 2σ
     const sc  = 1 + randn() * p.scale / 2 * damp;
     const shx = p.slant + randn() * p.shear / 2 * damp;
+    const scy = sc * (1 + randn() * p.scale / 3);
     g.translate(cx, cy);
     g.rotate(rot);
-    g.scale(sc, sc * (1 + randn() * p.scale / 3));
+    g.scale(sc, scy);
     g.transform(1, 0, -shx, 1, 0, 0);
     g.translate(-cx, -cy);
     g.fillStyle = '#000';
@@ -852,21 +859,42 @@ function renderLine(p, targetCanvas) {
       const id = g.getImageData(0, 0, gw, gh);
       g.putImageData(morphAlpha(id, gw, gh, op), 0, 0);
     }
-    glyphs.push({ canvas: gc, adv: advW, pad: glyphPad });
+    // Stage B+: entry/exit anchors (in glyph-canvas coords, through the same affine)
+    // for cursive bridging between adjacent hand letters
+    let join = null;
+    if (handInst && !u.word) {
+      const baseYg = gh / 2 + fs * 0.35;
+      const aff = pt => {
+        const dx = glyphPad + pt.x * fs - cx, dy = baseYg + pt.y * fs - cy;
+        const x2 = sc * (dx - shx * dy), y2 = scy * dy;
+        return { x: cx + x2 * Math.cos(rot) - y2 * Math.sin(rot),
+                 y: cy + x2 * Math.sin(rot) + y2 * Math.cos(rot) };
+      };
+      const first = handInst.strokes[0];
+      const last = handInst.strokes[handInst.strokes.length - 1];
+      join = {
+        entry: aff(first[0]),
+        entryRef: aff(first[Math.min(4, first.length - 1)]),
+        exit: aff(last[last.length - 1]),
+        exitRef: aff(last[Math.max(0, last.length - 5)]),
+      };
+    }
+    glyphs.push({ canvas: gc, adv: advW, pad: glyphPad, join });
   }
 
   // 2. Compose along drifting baseline with kerning jitter / overlaps
-  let x = pad, walk = 0;
+  let x = pad, walk = 0, spaceBrk = false;
   const placements = [];
   const phase = rand() * Math.PI * 2;
   for (const gl of glyphs) {
-    if (gl.space) { x += gl.adv + randn() * p.kern * fs; continue; }
+    if (gl.space) { x += gl.adv + randn() * p.kern * fs; spaceBrk = true; continue; }
     walk += randn() * p.basewalk;
     walk *= 0.94; // mean-reverting so it doesn't run off the page
     const y = pad + fs * 1.1
       + p.baseamp * Math.sin(2 * Math.PI * x / p.baseperiod + phase)
       + walk;
-    placements.push({ gl, x: x - gl.pad, y: y - fs * 1.25 });
+    placements.push({ gl, x: x - gl.pad, y: y - fs * 1.25, brk: spaceBrk });
+    spaceBrk = false;
     let adv = gl.adv + randn() * p.kern * fs;
     if (rand() < p.overlap) adv -= p.overlapdepth * fs * uniform(0.5, 1.5);
     x += Math.max(fs * 0.1, adv);
@@ -880,6 +908,34 @@ function renderLine(p, targetCanvas) {
   for (const pl of placements) {
     ic.globalAlpha = st.alpha * Math.min(1, Math.max(0.25, 1 - Math.abs(randn()) * p.inkjit * st.inkjit));
     ic.drawImage(pl.gl.canvas, pl.x, pl.y);
+  }
+
+  // Stage B+: cursive joining — Bernoulli connect-vs-lift per adjacent hand-letter pair,
+  // then a G1-continuous cubic Bézier bridge (handles = gap/3 along exit/entry tangents).
+  // Drawn before stroke morph + elastic so bridges get identical ink treatment.
+  if (p.connectprob > 0) {
+    ic.lineCap = 'round'; ic.lineJoin = 'round'; ic.strokeStyle = '#000';
+    for (let i = 1; i < placements.length; i++) {
+      const a = placements[i - 1], b = placements[i];
+      if (!a.gl.join || !b.gl.join || b.brk) continue;  // only within a word, both hand-drawn
+      const E = { x: a.x + a.gl.join.exit.x, y: a.y + a.gl.join.exit.y };
+      const S = { x: b.x + b.gl.join.entry.x, y: b.y + b.gl.join.entry.y };
+      const gapEm = Math.hypot(S.x - E.x, S.y - E.y) / fs;
+      const dyEm = (S.y - E.y) / fs;
+      // travel cost: vertical distance hurts most — Mkhedruli has 13 ascenders + 13 descenders,
+      // and real writers lift the pen rather than bridge a large vertical drop
+      const pConnect = p.connectprob * Math.exp(-1.3 * Math.abs(dyEm) - Math.max(0, gapEm - 0.7) * 2);
+      if (gapEm > 1.6 || rand() >= pConnect) continue;
+      const tE = norm2(E.x - (a.x + a.gl.join.exitRef.x), E.y - (a.y + a.gl.join.exitRef.y));
+      const tS = norm2((b.x + b.gl.join.entryRef.x) - S.x, (b.y + b.gl.join.entryRef.y) - S.y);
+      const h = gapEm * fs / 3;
+      ic.globalAlpha = 0.85;
+      ic.lineWidth = Math.max(0.6, p.penw * fs * 0.6); // transit strokes are fast → thinner
+      ic.beginPath();
+      ic.moveTo(E.x, E.y);
+      ic.bezierCurveTo(E.x + tE.x * h, E.y + tE.y * h, S.x - tS.x * h, S.y - tS.y * h, S.x, S.y);
+      ic.stroke();
+    }
   }
   ic.globalAlpha = 1;
 
@@ -1066,6 +1122,26 @@ function drawGuides() {
   for (const f of [0.30, HAND.BASE_FRAC]) {
     dctx.beginPath(); dctx.moveTo(0, dc.height * f); dctx.lineTo(dc.width, dc.height * f); dctx.stroke();
   }
+  // ghosts: previously saved samples of this key, centered on the box (em → px)
+  if (document.getElementById('ghost').checked) {
+    const wr = HAND.ensure(HAND.current);
+    const rec = wr[storeKind()][curKey];
+    if (rec && rec.samples.length) {
+      const em = dc.height * HAND.BOX_EM, baseY = dc.height * HAND.BASE_FRAC;
+      dctx.lineCap = 'round'; dctx.lineJoin = 'round'; dctx.lineWidth = 3;
+      rec.samples.slice(-4).forEach((s, i) => {
+        dctx.strokeStyle = `rgba(79,142,247,${0.28 - i * 0.05})`;
+        const x0 = (dc.width - s.w * em) / 2;
+        for (const stroke of s.strokes) {
+          dctx.beginPath();
+          stroke.forEach((pt, j) => j
+            ? dctx.lineTo(x0 + pt.x * em, baseY + pt.y * em)
+            : dctx.moveTo(x0 + pt.x * em, baseY + pt.y * em));
+          dctx.stroke();
+        }
+      });
+    }
+  }
   // replay strokes drawn so far
   dctx.strokeStyle = '#1a1c2e'; dctx.lineWidth = 3.5; dctx.lineCap = 'round'; dctx.lineJoin = 'round';
   for (const s of rawStrokes.concat(liveStroke ? [liveStroke] : [])) {
@@ -1073,6 +1149,56 @@ function drawGuides() {
     s.forEach((pt, i) => i ? dctx.lineTo(pt.x, pt.y) : dctx.moveTo(pt.x, pt.y));
     dctx.stroke();
   }
+}
+document.getElementById('ghost').addEventListener('change', () => drawGuides());
+
+/* ---- sample gallery: preview + delete individual drawings of the current key ---- */
+function renderSampleThumb(sample, cv) {
+  const c = cv.getContext('2d');
+  c.fillStyle = '#fdfcf8'; c.fillRect(0, 0, cv.width, cv.height);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const s of sample.strokes) for (const pt of s) {
+    minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x);
+    minY = Math.min(minY, pt.y); maxY = Math.max(maxY, pt.y);
+  }
+  const sc = Math.min((cv.width - 10) / Math.max(0.05, maxX - minX), (cv.height - 10) / Math.max(0.05, maxY - minY));
+  const ox = (cv.width - (maxX - minX) * sc) / 2 - minX * sc;
+  const oy = (cv.height - (maxY - minY) * sc) / 2 - minY * sc;
+  c.strokeStyle = '#1a1c2e'; c.lineWidth = 2; c.lineCap = 'round'; c.lineJoin = 'round';
+  for (const s of sample.strokes) {
+    c.beginPath();
+    s.forEach((pt, i) => i ? c.lineTo(ox + pt.x * sc, oy + pt.y * sc) : c.moveTo(ox + pt.x * sc, oy + pt.y * sc));
+    c.stroke();
+  }
+}
+function buildGallery() {
+  const gal = document.getElementById('samplegallery');
+  gal.innerHTML = '';
+  const wr = HAND.ensure(HAND.current);
+  const rec = wr[storeKind()][curKey];
+  const samples = rec ? rec.samples : [];
+  document.getElementById('galcount').textContent = samples.length
+    ? `${samples.length} saved drawing(s) of “${curKey}” — more samples = more morph pairs`
+    : `no drawings of “${curKey}” yet`;
+  samples.forEach((s, idx) => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:relative; border:1px solid var(--border); border-radius:8px; overflow:hidden;';
+    const cv = document.createElement('canvas');
+    cv.width = storeKind() === 'letters' ? 72 : Math.max(90, Math.min(220, Math.round(s.w * 46)));
+    cv.height = 72;
+    renderSampleThumb(s, cv);
+    const del = document.createElement('span');
+    del.textContent = '×';
+    del.title = 'delete this drawing';
+    del.style.cssText = 'position:absolute; top:1px; right:5px; cursor:pointer; color:#a33; font-weight:700; font-size:15px;';
+    del.addEventListener('click', () => {
+      rec.samples.splice(idx, 1);
+      HAND.persist();
+      buildLetterGrid(); drawGuides(); refreshWriterUI(); scheduleRender();
+    });
+    wrap.appendChild(cv); wrap.appendChild(del);
+    gal.appendChild(wrap);
+  });
 }
 function sampleCount(key) {
   const wr = HAND.ensure(HAND.current);
@@ -1099,6 +1225,7 @@ function buildLetterGrid() {
   }
   document.getElementById('targetletter').textContent = curKey;
   document.getElementById('targetcount').textContent = `(${sampleCount(curKey)} saved)`;
+  buildGallery();
 }
 function selectKey(key) {
   curKey = key; rawStrokes = []; liveStroke = null;
