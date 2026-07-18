@@ -54,6 +54,21 @@ trajectories — real (x, y, t) online handwriting data, not pixels:
 - the writer profile persists in localStorage and can be exported/imported as a small
   JSON file — one file ≈ one writer.
 
+### Multi-writer & word-level capture
+
+- **Word mode** on the drawing board captures whole handwritten words (wider canvas,
+  any word you type or a random corpus word). When generated text contains a drawn
+  word, a morphed instance of the *whole word* is used — real co-articulation and
+  spacing — with letter-composition fallback otherwise.
+- **Writer profiles**: create/delete/merge named writers; any subset can be *active*
+  for generation. Imports **add** writers (auto-renamed on collision), never overwrite —
+  so community-contributed profile JSONs can be pooled into a writer population.
+- **Hand/font mixing**: `hand probability` sets the per-sample chance of a hand-written
+  vs font-rendered sample. The source is decided per sample, not per glyph — a real
+  scanned line is one writer with one pen; the mixture lives across the batch.
+- `labels.jsonl` records `source` (hand/font) and `writer` per sample, enabling
+  **writer-disjoint splits** downstream — required for a credible benchmark.
+
 ## Roadmap
 
 - **Stage B+** — joining splines between letter exit/entry points (true cursive);

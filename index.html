@@ -217,7 +217,20 @@
     <details class="group" open>
       <summary>Your hand (Stage B)</summary>
       <div class="body">
-        <div class="checkline"><input type="checkbox" id="handmode"> <label for="handmode">Generate from my drawings</label></div>
+        <div class="checkline"><input type="checkbox" id="handmode"> <label for="handmode">Generate from drawn hands</label></div>
+        <div class="knob"><label>Hand probability (vs fonts) <span class="val" id="v_handprob">0.6</span></label>
+          <input type="range" id="handprob" min="0" max="1" step="0.05" value="0.6"></div>
+        <div class="knob">
+          <label>Writer (editing)</label>
+          <select id="writersel"></select>
+        </div>
+        <div class="btnrow" style="margin-top:0">
+          <button class="btn secondary" id="newwriter">➕ New writer</button>
+          <button class="btn secondary" id="mergewriter">⇄ Merge into…</button>
+        </div>
+        <button class="btn secondary" id="delwriter" style="margin-top:8px">🗑 Delete writer</button>
+        <div class="knob"><label>Active writers (used in generation)</label>
+          <div id="activelist" style="font-size:13px"></div></div>
         <div class="knob"><label>Motor jitter σ (em) <span class="val" id="v_handjitter">0.02</span></label>
           <input type="range" id="handjitter" min="0" max="0.08" step="0.002" value="0.02"></div>
         <div class="knob"><label>Pen width (em) <span class="val" id="v_penw">0.055</span></label>
@@ -259,9 +272,19 @@
       <span class="chip" data-preset="drunk">chaotic</span>
     </div>
     <div id="drawboard" style="display:none; background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-        <strong style="font-size:14px">Drawing board — write each letter 3× for motor-variability morphing</strong>
-        <button class="btn secondary" id="closedraw" style="width:auto; padding:6px 14px">✕ close</button>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:12px; flex-wrap:wrap;">
+        <strong style="font-size:14px">Drawing board · writer: <span id="drawwriter" style="color:var(--accent)"></span></strong>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <span class="chip active" id="modeletters">letters</span>
+          <span class="chip" id="modewords">words</span>
+          <button class="btn secondary" id="closedraw" style="width:auto; padding:6px 14px">✕ close</button>
+        </div>
+      </div>
+      <div id="wordrow" style="display:none; margin-bottom:10px; gap:8px; align-items:center;">
+        <input type="text" id="wordinput" placeholder="type a Georgian word to draw…"
+          style="max-width:280px; font-family:'Noto Sans Georgian'; font-size:16px;">
+        <button class="btn secondary" id="setword" style="width:auto; padding:8px 14px">set</button>
+        <button class="btn secondary" id="randword" style="width:auto; padding:8px 14px">🎲 random word</button>
       </div>
       <div id="lettergrid" style="display:flex; flex-wrap:wrap; gap:5px; margin-bottom:14px;"></div>
       <div style="display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start;">
@@ -374,7 +397,7 @@ function loadLocalFonts() {
 /* ---------------- Params ---------------- */
 const SLIDERS = ['weight','fontsize','rot','scale','shear','slant','kern','overlap','overlapdepth',
   'baseamp','baseperiod','basewalk','elasticamp','elasticsigma','stroke','strokejit','inkjit','bleed','papernoise',
-  'handjitter','penw','speedthin'];
+  'handjitter','penw','speedthin','handprob'];
 function readParams() {
   const p = {};
   for (const id of SLIDERS) p[id] = parseFloat(document.getElementById(id).value);
@@ -492,26 +515,77 @@ function morphAlpha(imgData, w, h, op) { // op: +1 dilate, -1 erode, one 3x3 pas
    Generation: morph between two random samples (when stroke counts match) + smooth
    correlated 1D noise on the point sequence = cheap motor-variability model. */
 const HAND = {
-  profile: {},           // letter -> { samples: [...] }
-  LS_KEY: 'geoscribe_hand_profile_v1',
+  writers: {},           // name -> { letters: {ch: {samples}}, words: {word: {samples}} }
+  active: [],            // writer names enabled for generation
+  current: 'me',         // writer being edited on the drawing board
+  LS_KEY: 'geoscribe_hand_profiles_v2',
   N: 44,                 // resampled points per stroke
   BOX_EM: 0.5,           // 1 em = this fraction of the drawing box height
   BASE_FRAC: 0.70,       // baseline guide position in the box
 
-  has(ch) { return !!(this.profile[ch] && this.profile[ch].samples.length); },
-  counts() {
-    const letters = Object.keys(this.profile).filter(ch => this.has(ch));
-    const samples = letters.reduce((s, ch) => s + this.profile[ch].samples.length, 0);
-    return { letters: letters.length, samples };
-  },
   load() {
-    try { this.profile = JSON.parse(localStorage.getItem(this.LS_KEY)) || {}; }
-    catch (e) { this.profile = {}; }
+    try {
+      const v2 = JSON.parse(localStorage.getItem(this.LS_KEY));
+      if (v2 && v2.writers) { this.writers = v2.writers; this.active = v2.active || Object.keys(v2.writers); }
+    } catch (e) {}
+    // migrate v1 (single flat letter profile) into writer "me"
+    try {
+      const v1 = JSON.parse(localStorage.getItem('geoscribe_hand_profile_v1'));
+      if (v1 && Object.keys(v1).length && !this.writers['me']) {
+        this.writers['me'] = { letters: v1, words: {} };
+        if (!this.active.includes('me')) this.active.push('me');
+        localStorage.removeItem('geoscribe_hand_profile_v1');
+        this.persist();
+      }
+    } catch (e) {}
+    if (!Object.keys(this.writers).length) { this.writers['me'] = { letters: {}, words: {} }; this.active = ['me']; }
+    this.current = this.writers[this.current] ? this.current : Object.keys(this.writers)[0];
   },
-  persist() { localStorage.setItem(this.LS_KEY, JSON.stringify(this.profile)); },
+  persist() { localStorage.setItem(this.LS_KEY, JSON.stringify({ writers: this.writers, active: this.active })); },
+  ensure(name) {
+    if (!this.writers[name]) this.writers[name] = { letters: {}, words: {} };
+    if (!this.writers[name].words) this.writers[name].words = {};
+    return this.writers[name];
+  },
+  activeWriters() { return this.active.filter(n => this.writers[n]); },
+  stats(name) {
+    const w = this.writers[name];
+    if (!w) return { letters: 0, words: 0, samples: 0 };
+    let samples = 0, letters = 0, words = 0;
+    for (const k in w.letters) if (w.letters[k].samples.length) { letters++; samples += w.letters[k].samples.length; }
+    for (const k in (w.words || {})) if (w.words[k].samples.length) { words++; samples += w.words[k].samples.length; }
+    return { letters, words, samples };
+  },
+  coveredWriters() {
+    return this.activeWriters().filter(n => { const s = this.stats(n); return s.letters > 0 || s.words > 0; });
+  },
+  pickWriter() {
+    const pool = this.coveredWriters();
+    return pool.length ? pool[Math.floor(rand() * pool.length)] : null;
+  },
+  drawnWords() { // union of drawn words across active writers (for batch text sampling)
+    const set = new Set();
+    for (const n of this.activeWriters())
+      for (const k in (this.writers[n].words || {}))
+        if (this.writers[n].words[k].samples.length) set.add(k);
+    return [...set];
+  },
+  merge(src, dst) {
+    if (src === dst || !this.writers[src]) return;
+    const s = this.ensure(src), d = this.ensure(dst);
+    for (const kind of ['letters', 'words'])
+      for (const k in s[kind]) {
+        if (!d[kind][k]) d[kind][k] = { samples: [] };
+        d[kind][k].samples.push(...s[kind][k].samples);
+      }
+    delete this.writers[src];
+    this.active = this.active.filter(n => n !== src);
+    if (this.current === src) this.current = dst;
+    this.persist();
+  },
 
   // raw: array of strokes, each [{x, y, t}] in canvas px of a box of height boxH
-  addSample(ch, raw, boxH) {
+  addSample(name, kind, key, raw, boxH) {
     const em = boxH * this.BOX_EM;
     const baseY = boxH * this.BASE_FRAC;
     let minX = Infinity, maxX = -Infinity;
@@ -519,8 +593,9 @@ const HAND = {
     const strokes = raw.map(s => this.resample(s)).map(s =>
       s.map(pt => ({ x: (pt.x - minX) / em, y: (pt.y - baseY) / em, v: pt.v })));
     const w = (maxX - minX) / em;
-    if (!this.profile[ch]) this.profile[ch] = { samples: [] };
-    this.profile[ch].samples.push({ strokes, w });
+    const wr = this.ensure(name);
+    if (!wr[kind][key]) wr[kind][key] = { samples: [] };
+    wr[kind][key].samples.push({ strokes, w });
     this.persist();
   },
 
@@ -582,9 +657,8 @@ const HAND = {
     return a.map(v => v / rms * sigma);
   },
 
-  // returns {strokes: [[{x,y,v}]], w} — a fresh instance of the letter in em units
-  sampleInstance(ch, p) {
-    const samples = this.profile[ch].samples;
+  // returns {strokes: [[{x,y,v}]], w} — a fresh instance in em units from a sample array
+  instanceFrom(samples, p) {
     let inst;
     const a = samples[Math.floor(rand() * samples.length)];
     const b = samples[Math.floor(rand() * samples.length)];
@@ -649,23 +723,43 @@ function pickFontDef(p) {
 function renderLine(p, targetCanvas) {
   rng = mulberry32(p.seed);
   const fs = p.fontsize;
-  const chars = [...p.text.replace(/\n/g, ' ')];
   const pad = Math.ceil(fs * 0.9);
   const glyphPad = Math.ceil(fs * 0.6);
 
-  // resolve font(s): fixed | one random handwriting font per sample | per glyph
+  // resolve sources: font mode as before; hand source decided PER SAMPLE (a real
+  // scanned line is one writer with one pen — mixture lives across the batch)
   const sampleFont = pickFontDef(p);
-  const useHand = p.handmode && HAND.counts().letters > 0;
-  p._usedFont = (useHand ? 'hand+' : '') + (p.fontmode === 'glyph' ? 'mixed' : sampleFont.id);
+  const writer = (p.handmode && HAND.coveredWriters().length) ? HAND.pickWriter() : null;
+  const useHand = writer !== null && rand() < p.handprob;
+  const wd = useHand ? HAND.writers[writer] : null;
+  p._source = useHand ? 'hand' : 'font';
+  p._writer = useHand ? writer : null;
+  p._usedFont = p.fontmode === 'glyph' ? 'mixed' : sampleFont.id;
 
-  // 1. Measure & render each glyph to its own canvas with random affine
+  // tokenize: whole drawn words become single units, everything else letter units
+  const units = [];
+  for (const word of p.text.replace(/\n/g, ' ').split(' ')) {
+    if (units.length) units.push({ space: true });
+    if (!word) continue;
+    if (wd && wd.words[word] && wd.words[word].samples.length) units.push({ word });
+    else for (const ch of [...word]) units.push({ ch });
+  }
+
+  // 1. Measure & render each unit to its own canvas with random affine
   const meas = document.createElement('canvas').getContext('2d');
   const glyphs = [];
-  for (const ch of chars) {
-    if (ch === ' ') { glyphs.push({ space: true, adv: fs * uniform(0.3, 0.5) }); continue; }
+  for (const u of units) {
+    if (u.space) { glyphs.push({ space: true, adv: fs * uniform(0.3, 0.5) }); continue; }
     const fd = p.fontmode === 'glyph' ? pickFontDef(p) : sampleFont;
-    const drawCh = fd.translit ? (TRANSLIT[ch] || ch) : ch;
-    const handInst = (useHand && HAND.has(ch)) ? HAND.sampleInstance(ch, p) : null;
+    let handInst = null, drawCh = null, damp = 1;
+    if (u.word) {
+      handInst = HAND.instanceFrom(wd.words[u.word].samples, p);
+      damp = 0.35; // whole words get gentler affine jitter than single glyphs
+    } else if (wd && wd.letters[u.ch] && wd.letters[u.ch].samples.length) {
+      handInst = HAND.instanceFrom(wd.letters[u.ch].samples, p);
+    } else {
+      drawCh = fd.translit ? (TRANSLIT[u.ch] || u.ch) : u.ch;
+    }
     let advW;
     if (handInst) {
       advW = handInst.w * fs;
@@ -681,9 +775,9 @@ function renderLine(p, targetCanvas) {
     g.textBaseline = 'alphabetic';
     // affine about glyph center
     const cx = gw / 2, cy = gh / 2;
-    const rot = randn() * p.rot * Math.PI / 180 / 2;      // σ = rot/2 → ±rot ≈ 2σ
-    const sc  = 1 + randn() * p.scale / 2;
-    const shx = p.slant + randn() * p.shear / 2;
+    const rot = randn() * p.rot * Math.PI / 180 / 2 * damp;      // σ = rot/2 → ±rot ≈ 2σ
+    const sc  = 1 + randn() * p.scale / 2 * damp;
+    const shx = p.slant + randn() * p.shear / 2 * damp;
     g.translate(cx, cy);
     g.rotate(rot);
     g.scale(sc, sc * (1 + randn() * p.scale / 3));
@@ -803,7 +897,8 @@ function render() {
   const t0 = performance.now();
   const p = readParams();
   renderLine(p, canvas);
-  statusEl.textContent = `rendered ${canvas.width}×${canvas.height} in ${(performance.now() - t0).toFixed(0)} ms · seed ${p.seed} · font ${p._usedFont}`;
+  statusEl.textContent = `rendered ${canvas.width}×${canvas.height} in ${(performance.now() - t0).toFixed(0)} ms · seed ${p.seed} · `
+    + (p._source === 'hand' ? `writer ${p._writer} (+font ${p._usedFont})` : `font ${p._usedFont}`);
 }
 function scheduleRender() {
   clearTimeout(renderTimer);
@@ -846,23 +941,55 @@ const MKHEDRULI = [...'აბგდევზთიკლმნოპჟრსტ
 const drawboard = document.getElementById('drawboard');
 const dc = document.getElementById('drawcanvas');
 const dctx = dc.getContext('2d');
-let curLetter = 'ა';
-let rawStrokes = [];   // strokes being drawn: [[{x,y,t}]]
+let drawMode = 'letters';  // 'letters' | 'words'
+let curKey = 'ა';          // letter or word being drawn
+let rawStrokes = [];       // strokes being drawn: [[{x,y,t}]]
 let liveStroke = null;
 
 function handStatus() {
-  const c = HAND.counts();
+  const lines = HAND.activeWriters().map(n => {
+    const s = HAND.stats(n);
+    return `${n}: ${s.letters}/33 letters, ${s.words} words, ${s.samples} samples`;
+  });
   document.getElementById('handstatus').textContent =
-    c.letters ? `profile: ${c.letters}/33 letters, ${c.samples} samples` : 'no samples yet — open the drawing board';
+    lines.length ? lines.join(' · ') : 'no active writers — open the drawing board';
+}
+function refreshWriterUI() {
+  const sel = document.getElementById('writersel');
+  sel.innerHTML = '';
+  for (const n of Object.keys(HAND.writers)) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n;
+    sel.appendChild(o);
+  }
+  sel.value = HAND.current;
+  const al = document.getElementById('activelist');
+  al.innerHTML = '';
+  for (const n of Object.keys(HAND.writers)) {
+    const lbl = document.createElement('label');
+    lbl.style.cssText = 'display:flex;align-items:center;gap:6px;margin:3px 0;cursor:pointer;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = HAND.active.includes(n);
+    cb.addEventListener('change', () => {
+      HAND.active = cb.checked ? [...new Set([...HAND.active, n])] : HAND.active.filter(x => x !== n);
+      HAND.persist(); handStatus(); scheduleRender();
+    });
+    const s = HAND.stats(n);
+    lbl.appendChild(cb);
+    lbl.appendChild(document.createTextNode(`${n} (${s.letters}L/${s.words}W/${s.samples}s)`));
+    al.appendChild(lbl);
+  }
+  document.getElementById('drawwriter').textContent = HAND.current;
+  handStatus();
 }
 function drawGuides() {
   dctx.clearRect(0, 0, dc.width, dc.height);
   dctx.fillStyle = '#fdfcf8'; dctx.fillRect(0, 0, dc.width, dc.height);
-  // faint reference letter
+  // faint reference letter/word
   dctx.fillStyle = 'rgba(120,140,180,0.13)';
-  dctx.font = `220px 'Noto Sans Georgian'`;
+  dctx.font = `${drawMode === 'letters' ? 220 : 110}px 'Noto Sans Georgian'`;
   dctx.textAlign = 'center'; dctx.textBaseline = 'alphabetic';
-  dctx.fillText(curLetter, dc.width / 2, dc.height * HAND.BASE_FRAC);
+  dctx.fillText(curKey, dc.width / 2, dc.height * HAND.BASE_FRAC);
   dctx.textAlign = 'start';
   // guide lines: x-height-ish and baseline
   dctx.strokeStyle = 'rgba(90,130,200,0.4)'; dctx.lineWidth = 1;
@@ -877,28 +1004,59 @@ function drawGuides() {
     dctx.stroke();
   }
 }
+function sampleCount(key) {
+  const wr = HAND.ensure(HAND.current);
+  const rec = wr[drawMode][key];
+  return rec ? rec.samples.length : 0;
+}
 function buildLetterGrid() {
   const grid = document.getElementById('lettergrid');
   grid.innerHTML = '';
-  for (const ch of MKHEDRULI) {
-    const n = HAND.has(ch) ? HAND.profile[ch].samples.length : 0;
+  const wr = HAND.ensure(HAND.current);
+  const keys = drawMode === 'letters' ? MKHEDRULI
+    : [...new Set([...Object.keys(wr.words).filter(k => wr.words[k].samples.length), curKey])];
+  for (const key of keys) {
+    const n = sampleCount(key);
     const b = document.createElement('span');
-    b.className = 'chip' + (ch === curLetter ? ' active' : '');
+    b.className = 'chip' + (key === curKey ? ' active' : '');
     b.style.fontFamily = "'Noto Sans Georgian'";
-    b.textContent = ch + (n ? ` ${n}` : '');
+    b.textContent = key + (n ? ` ${n}` : '');
     if (n >= 3) b.style.borderColor = '#3fa96b';
     else if (n > 0) b.style.borderColor = '#c9a13f';
-    b.addEventListener('click', () => selectLetter(ch));
+    b.addEventListener('click', () => selectKey(key));
     grid.appendChild(b);
   }
-  document.getElementById('targetletter').textContent = curLetter;
-  document.getElementById('targetcount').textContent =
-    HAND.has(curLetter) ? `(${HAND.profile[curLetter].samples.length} saved)` : '(0 saved)';
+  document.getElementById('targetletter').textContent = curKey;
+  document.getElementById('targetcount').textContent = `(${sampleCount(curKey)} saved)`;
 }
-function selectLetter(ch) {
-  curLetter = ch; rawStrokes = []; liveStroke = null;
+function selectKey(key) {
+  curKey = key; rawStrokes = []; liveStroke = null;
   buildLetterGrid(); drawGuides();
 }
+function setDrawMode(m) {
+  drawMode = m;
+  document.getElementById('modeletters').classList.toggle('active', m === 'letters');
+  document.getElementById('modewords').classList.toggle('active', m === 'words');
+  document.getElementById('wordrow').style.display = m === 'words' ? 'flex' : 'none';
+  dc.width = m === 'words' ? 680 : 340;   // wider canvas for whole words
+  dc.height = 340;
+  if (m === 'letters') curKey = MKHEDRULI[0];
+  else {
+    const wr = HAND.ensure(HAND.current);
+    curKey = Object.keys(wr.words)[0] || 'გამარჯობა';
+  }
+  rawStrokes = []; liveStroke = null;
+  buildLetterGrid(); drawGuides();
+}
+document.getElementById('modeletters').addEventListener('click', () => setDrawMode('letters'));
+document.getElementById('modewords').addEventListener('click', () => setDrawMode('words'));
+document.getElementById('setword').addEventListener('click', () => {
+  const w = document.getElementById('wordinput').value.trim();
+  if (w) selectKey(w);
+});
+document.getElementById('randword').addEventListener('click', () => {
+  selectKey(SAMPLE_WORDS[Math.floor(Math.random() * SAMPLE_WORDS.length)]);
+});
 function canvasPos(e) {
   const r = dc.getBoundingClientRect();
   return { x: (e.clientX - r.left) * dc.width / r.width, y: (e.clientY - r.top) * dc.height / r.height, t: performance.now() };
@@ -921,33 +1079,69 @@ dc.addEventListener('pointercancel', endStroke);
 
 document.getElementById('savestroke').addEventListener('click', () => {
   if (!rawStrokes.length) { document.getElementById('drawstatus').textContent = 'nothing drawn yet'; return; }
-  HAND.addSample(curLetter, rawStrokes, dc.height);
+  HAND.addSample(HAND.current, drawMode, curKey, rawStrokes, dc.height);
   rawStrokes = [];
-  document.getElementById('drawstatus').textContent = `saved ${curLetter} ✓`;
-  handStatus();
-  if (document.getElementById('autoadvance').checked) {
+  document.getElementById('drawstatus').textContent = `saved ${curKey} ✓`;
+  refreshWriterUI();
+  if (drawMode === 'letters' && document.getElementById('autoadvance').checked) {
     // next letter with fewest samples (fills 33 first, then 2nd/3rd repetitions)
-    const next = [...MKHEDRULI].sort((a, b) =>
-      (HAND.has(a) ? HAND.profile[a].samples.length : 0) - (HAND.has(b) ? HAND.profile[b].samples.length : 0))[0];
-    selectLetter(next);
-  } else buildLetterGrid(), drawGuides();
+    const next = [...MKHEDRULI].sort((a, b) => sampleCount(a) - sampleCount(b))[0];
+    selectKey(next);
+  } else { buildLetterGrid(); drawGuides(); }
   if (document.getElementById('handmode').checked) scheduleRender();
 });
 document.getElementById('undostroke').addEventListener('click', () => { rawStrokes.pop(); drawGuides(); });
 document.getElementById('clearstroke').addEventListener('click', () => { rawStrokes = []; liveStroke = null; drawGuides(); });
 document.getElementById('opendraw').addEventListener('click', () => {
   drawboard.style.display = 'block';
-  document.fonts.ready.then(() => { buildLetterGrid(); drawGuides(); });
+  document.fonts.ready.then(() => { refreshWriterUI(); buildLetterGrid(); drawGuides(); });
 });
 document.getElementById('closedraw').addEventListener('click', () => { drawboard.style.display = 'none'; });
 document.getElementById('wipeprofile').addEventListener('click', () => {
-  if (!confirm('Delete ALL your drawn samples?')) return;
-  HAND.profile = {}; HAND.persist(); handStatus(); buildLetterGrid(); drawGuides(); scheduleRender();
+  if (!confirm(`Delete ALL samples of writer "${HAND.current}"?`)) return;
+  HAND.writers[HAND.current] = { letters: {}, words: {} };
+  HAND.persist(); refreshWriterUI(); buildLetterGrid(); drawGuides(); scheduleRender();
 });
+
+/* ---- writer management ---- */
+document.getElementById('writersel').addEventListener('change', e => {
+  HAND.current = e.target.value;
+  refreshWriterUI(); setDrawMode(drawMode);
+});
+document.getElementById('newwriter').addEventListener('click', () => {
+  const n = prompt('Name for the new writer (e.g. "nino", "guest-04"):');
+  if (!n || !n.trim()) return;
+  const name = n.trim();
+  HAND.ensure(name);
+  if (!HAND.active.includes(name)) HAND.active.push(name);
+  HAND.current = name;
+  HAND.persist(); refreshWriterUI(); setDrawMode(drawMode);
+});
+document.getElementById('delwriter').addEventListener('click', () => {
+  const names = Object.keys(HAND.writers);
+  if (names.length <= 1) { alert('Cannot delete the last writer.'); return; }
+  if (!confirm(`Delete writer "${HAND.current}" and all their samples?`)) return;
+  delete HAND.writers[HAND.current];
+  HAND.active = HAND.active.filter(x => x !== HAND.current);
+  HAND.current = Object.keys(HAND.writers)[0];
+  HAND.persist(); refreshWriterUI(); scheduleRender();
+});
+document.getElementById('mergewriter').addEventListener('click', () => {
+  const others = Object.keys(HAND.writers).filter(n => n !== HAND.current);
+  if (!others.length) { alert('No other writer to merge from.'); return; }
+  const src = prompt(`Merge which writer INTO "${HAND.current}"?\nAvailable: ${others.join(', ')}`);
+  if (!src || !HAND.writers[src.trim()] || src.trim() === HAND.current) return;
+  HAND.merge(src.trim(), HAND.current);
+  refreshWriterUI(); buildLetterGrid(); drawGuides(); scheduleRender();
+});
+
+/* ---- profile export/import (multi-writer aware) ---- */
 document.getElementById('exportprofile').addEventListener('click', () => {
   const a = document.createElement('a');
-  a.download = 'geoscribe_hand_profile.json';
-  a.href = URL.createObjectURL(new Blob([JSON.stringify(HAND.profile)], { type: 'application/json' }));
+  a.download = 'geoscribe_writers.json';
+  a.href = URL.createObjectURL(new Blob(
+    [JSON.stringify({ format: 'geoscribe-writers-v2', writers: HAND.writers })],
+    { type: 'application/json' }));
   a.click();
 });
 document.getElementById('importprofile').addEventListener('click', () => document.getElementById('importfile').click());
@@ -956,15 +1150,31 @@ document.getElementById('importfile').addEventListener('change', e => {
   if (!f) return;
   f.text().then(txt => {
     try {
-      HAND.profile = JSON.parse(txt); HAND.persist();
-      handStatus(); buildLetterGrid(); drawGuides();
+      const data = JSON.parse(txt);
+      // accepted: v2 multi-writer {writers}, v2 single writer {letters,words}, v1 flat {ჩ:{samples}}
+      let incoming;
+      if (data.writers) incoming = data.writers;
+      else if (data.letters || data.words) incoming = { [f.name.replace(/\.json$/, '')]: { letters: data.letters || {}, words: data.words || {} } };
+      else incoming = { [f.name.replace(/\.json$/, '')]: { letters: data, words: {} } };
+      let added = 0;
+      for (const [name, wr] of Object.entries(incoming)) {
+        let n = name, i = 2;
+        while (HAND.writers[n]) n = `${name}-${i++}`;  // imports ADD writers, never overwrite
+        HAND.writers[n] = { letters: wr.letters || {}, words: wr.words || {} };
+        HAND.active.push(n);
+        added++;
+      }
+      HAND.persist();
+      refreshWriterUI(); buildLetterGrid(); drawGuides();
       document.getElementById('handmode').checked = true;
+      document.getElementById('handstatus').textContent = `imported ${added} writer(s) ✓`;
       render();
     } catch (err) { document.getElementById('handstatus').textContent = 'import failed: not valid JSON'; }
   });
+  e.target.value = '';
 });
 document.getElementById('handmode').addEventListener('change', scheduleRender);
-handStatus();
+refreshWriterUI();
 
 /* ---------------- Batch dataset export ---------------- */
 const SAMPLE_WORDS = ('ხელნაწერი ტექსტი ქართული ენა ანბანი მთაწმინდა თბილისი საქართველო წიგნი ' +
@@ -982,19 +1192,25 @@ document.getElementById('batch').addEventListener('click', async () => {
   const prog = document.getElementById('prog');
   prog.style.display = 'block';
   const off = document.createElement('canvas');
+  // word pool: base corpus + drawn words (weighted 3x so word-level hand data appears often)
+  const drawn = base.handmode ? HAND.drawnWords() : [];
+  const pool = SAMPLE_WORDS.concat(drawn, drawn, drawn);
   for (let i = 0; i < n; i++) {
     const p = { ...base };
     p.seed = Math.floor(Math.random() * 1e9);
     // sample a random 2–5 word line for label diversity
     const nw = 2 + Math.floor(Math.random() * 4);
     const words = [];
-    for (let w = 0; w < nw; w++) words.push(SAMPLE_WORDS[Math.floor(Math.random() * SAMPLE_WORDS.length)]);
+    for (let w = 0; w < nw; w++) words.push(pool[Math.floor(Math.random() * pool.length)]);
     p.text = words.join(' ');
     renderLine(p, off);
     const blob = await new Promise(res => off.toBlob(res, 'image/png'));
     const fname = `${String(i).padStart(5, '0')}.png`;
     imgs.file(fname, blob);
-    labels.push(JSON.stringify({ file: 'images/' + fname, text: p.text, seed: p.seed, font: p._usedFont }));
+    labels.push(JSON.stringify({
+      file: 'images/' + fname, text: p.text, seed: p.seed,
+      source: p._source || 'font', writer: p._writer || null, font: p._usedFont,
+    }));
     prog.value = (i + 1) / n;
     if (i % 5 === 0) await new Promise(r => setTimeout(r, 0)); // keep UI alive
   }
