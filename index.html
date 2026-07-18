@@ -206,6 +206,18 @@
             <option value="#101014">Black</option>
             <option value="#1b3a8f">Ballpoint blue</option>
             <option value="#3a2a1a">Sepia</option>
+            <option value="#4a4a52">Graphite grey</option>
+            <option value="#a32222">Red</option>
+            <option value="#1f5c37">Green</option>
+            <option value="#4b2a7a">Purple</option>
+            <option value="#6b7fae">Faded blue</option>
+          </select></div>
+        <div class="knob"><label>Ink style</label>
+          <select id="inkstyle">
+            <option value="fountain">Fountain pen (bleed, darkness variation)</option>
+            <option value="ballpoint" selected>Ballpoint (crisp, even)</option>
+            <option value="gel">Gel pen (dense, minimal bleed)</option>
+            <option value="pencil">Pencil (grain, lighter)</option>
           </select></div>
       </div>
     </details>
@@ -368,21 +380,23 @@ const uniform = (a, b) => a + rand() * (b - a);
    GORDAN, LORTKIPN (contain only Latin glyphs), academiury (scrambled mapping),
    barnaba, geo_script (nonstandard symbol cmap — tofu everywhere). */
 const FONTS = [
-  { id:'dm-ambrosi',              file:'fonts/dm-ambrosi.ttf',              label:'DM Ambrosi (hand)',              hand:true },
-  { id:'dm-davit-guramishvili',   file:'fonts/dm-davit-guramishvili.ttf',   label:'DM Davit Guramishvili (hand)',   hand:true },
-  { id:'dm-elene-akhvlediani',    file:'fonts/dm-elene-akhvlediani.ttf',    label:'DM Elene Akhvlediani (hand)',    hand:true },
-  { id:'dm-galaktioni',           file:'fonts/dm-galaktioni.ttf',           label:'DM Galaktioni (hand)',           hand:true },
-  { id:'dm-ilia',                 file:'fonts/dm-ilia.ttf',                 label:'DM Ilia (hand)',                 hand:true },
-  { id:'dm-ivane-javakhishvili',  file:'fonts/dm-ivane-javakhishvili.ttf',  label:'DM Ivane Javakhishvili (hand)',  hand:true },
-  { id:'dm-ivane-nanuashvili',    file:'fonts/dm-ivane-nanuashvili.ttf',    label:'DM Ivane Nanuashvili (hand)',    hand:true },
-  { id:'dm-mikhako-tsereteli',    file:'fonts/dm-mikhako-tsereteli.ttf',    label:'DM Mikhako Tsereteli (hand)',    hand:true },
-  { id:'dm-revaz',                file:'fonts/dm-revaz-moistsrapishvili.ttf', label:'DM Revaz Moistsrapishvili (hand)', hand:true },
-  { id:'3d-unicode',              file:'fonts/3d-unicode.ttf',              label:'3D Unicode (hand)',              hand:true },
-  { id:'calligraphy',             file:'fonts/calligraphy.ttf',             label:'Calligraphy (hand)',             hand:true,  translit:true },
+  // `missing`: chars without glyphs in this font (verified via fontTools BoundsPen);
+  // these render with Noto Sans Georgian as a per-glyph fallback to avoid tofu.
+  { id:'dm-ambrosi',              file:'fonts/dm-ambrosi.ttf',              label:'DM Ambrosi (hand)',              hand:true,  missing:'«»' },
+  { id:'dm-davit-guramishvili',   file:'fonts/dm-davit-guramishvili.ttf',   label:'DM Davit Guramishvili (hand)',   hand:true,  missing:'«»' },
+  { id:'dm-elene-akhvlediani',    file:'fonts/dm-elene-akhvlediani.ttf',    label:'DM Elene Akhvlediani (hand)',    hand:true,  missing:'«»' },
+  { id:'dm-galaktioni',           file:'fonts/dm-galaktioni.ttf',           label:'DM Galaktioni (hand)',           hand:true,  missing:'«»' },
+  { id:'dm-ilia',                 file:'fonts/dm-ilia.ttf',                 label:'DM Ilia (hand)',                 hand:true,  missing:'«»' },
+  { id:'dm-ivane-javakhishvili',  file:'fonts/dm-ivane-javakhishvili.ttf',  label:'DM Ivane Javakhishvili (hand)',  hand:true,  missing:'«»' },
+  { id:'dm-ivane-nanuashvili',    file:'fonts/dm-ivane-nanuashvili.ttf',    label:'DM Ivane Nanuashvili (hand)',    hand:true,  missing:'«»' },
+  { id:'dm-mikhako-tsereteli',    file:'fonts/dm-mikhako-tsereteli.ttf',    label:'DM Mikhako Tsereteli (hand)',    hand:true,  missing:'«»' },
+  { id:'dm-revaz',                file:'fonts/dm-revaz-moistsrapishvili.ttf', label:'DM Revaz Moistsrapishvili (hand)', hand:true, missing:'«»჻' },
+  { id:'3d-unicode',              file:'fonts/3d-unicode.ttf',              label:'3D Unicode (hand)',              hand:true,  missing:'.,!?;:()-„“«»჻0123456789' },
+  { id:'calligraphy',             file:'fonts/calligraphy.ttf',             label:'Calligraphy (hand)',             hand:true,  translit:true, missing:'()„“«»჻' },
   { id:'mch-vardi',               file:'fonts/mch-vardi.otf',               label:'MCh Vardi (calligraphic)',       hand:true },
   { id:'mch-vardi-serif',         file:'fonts/mch-vardi-serif.otf',         label:'MCh Vardi Serif (calligraphic)', hand:true },
-  { id:'gancxadebebi',            file:'fonts/gancxadebebi.ttf',            label:'Gancxadebebi (print)',           hand:false, translit:true },
-  { id:'kolkheti',                file:'fonts/kolkheti.ttf',                label:'Kolkheti (print)',               hand:false, translit:true },
+  { id:'gancxadebebi',            file:'fonts/gancxadebebi.ttf',            label:'Gancxadebebi (print)',           hand:false, translit:true, missing:'„“«»჻' },
+  { id:'kolkheti',                file:'fonts/kolkheti.ttf',                label:'Kolkheti (print)',               hand:false, translit:true, missing:'«»჻' },
   { id:'bpg-glaho',               file:'fonts/bpg-glaho.ttf',               label:'BPG Glaho (print)',              hand:false },
   { id:'bpg-nino-elite-caps',     file:'fonts/bpg-nino-elite-caps.otf',     label:'BPG Nino Elite Caps (mtavruli)', hand:false },
   { id:'noto-sans',               label:'Noto Sans Georgian (print)',       family:"'Noto Sans Georgian'", hand:false },
@@ -417,6 +431,7 @@ function readParams() {
   p.font = document.getElementById('font').value;
   p.fontmode = document.getElementById('fontmode').value;
   p.inkcolor = document.getElementById('inkcolor').value;
+  p.inkstyle = document.getElementById('inkstyle').value;
   p.papertint = document.getElementById('papertint').value;
   p.ruled = document.getElementById('ruled').checked;
   p.handmode = document.getElementById('handmode').checked;
@@ -733,8 +748,17 @@ function pickFontDef(p) {
   return pool[Math.floor(rand() * pool.length)];
 }
 
+// ink-style physics: multipliers on bleed/darkness-jitter, base opacity, and grain
+const INKSTYLES = {
+  fountain:  { bleed: 1.3,  inkjit: 1.2, alpha: 1.0,  grain: 0 },
+  ballpoint: { bleed: 0.35, inkjit: 0.6, alpha: 0.97, grain: 0 },
+  gel:       { bleed: 0.15, inkjit: 0.25, alpha: 1.0, grain: 0 },
+  pencil:    { bleed: 0.5,  inkjit: 0.9, alpha: 0.8,  grain: 0.45 },
+};
+
 function renderLine(p, targetCanvas) {
   rng = mulberry32(p.seed);
+  const st = INKSTYLES[p.inkstyle] || INKSTYLES.ballpoint;
   const fs = p.fontsize;
   const pad = Math.ceil(fs * 0.9);
   const glyphPad = Math.ceil(fs * 0.6);
@@ -784,21 +808,26 @@ function renderLine(p, targetCanvas) {
       damp = 0.35; // whole words get gentler affine jitter than single glyphs
     } else if (wd && wd.letters[u.ch] && wd.letters[u.ch].samples.length) {
       handInst = HAND.instanceFrom(wd.letters[u.ch].samples, p);
-    } else {
-      drawCh = fd.translit ? (TRANSLIT[u.ch] || u.ch) : u.ch;
+    }
+    let glyphFam = fd.family;
+    if (!handInst && !u.word) {
+      // per-glyph tofu fallback: chars this font lacks render in Noto
+      const lacks = fd.missing && fd.missing.includes(u.ch);
+      glyphFam = lacks ? "'Noto Sans Georgian'" : fd.family;
+      drawCh = (!lacks && fd.translit) ? (TRANSLIT[u.ch] || u.ch) : u.ch;
     }
     let advW;
     if (handInst) {
       advW = handInst.w * fs;
     } else {
-      meas.font = `${p.weight} ${fs}px ${fd.family}`;
+      meas.font = `${p.weight} ${fs}px ${glyphFam}`;
       advW = meas.measureText(drawCh).width;
     }
     const gw = Math.ceil(advW) + glyphPad * 2, gh = Math.ceil(fs * 1.8) + glyphPad * 2;
     const gc = document.createElement('canvas');
     gc.width = gw; gc.height = gh;
     const g = gc.getContext('2d');
-    g.font = `${p.weight} ${fs}px ${fd.family}`;
+    g.font = `${p.weight} ${fs}px ${glyphFam}`;
     g.textBaseline = 'alphabetic';
     // affine about glyph center
     const cx = gw / 2, cy = gh / 2;
@@ -845,7 +874,7 @@ function renderLine(p, targetCanvas) {
   ink.width = W; ink.height = H;
   const ic = ink.getContext('2d');
   for (const pl of placements) {
-    ic.globalAlpha = Math.min(1, Math.max(0.25, 1 - Math.abs(randn()) * p.inkjit));
+    ic.globalAlpha = st.alpha * Math.min(1, Math.max(0.25, 1 - Math.abs(randn()) * p.inkjit * st.inkjit));
     ic.drawImage(pl.gl.canvas, pl.x, pl.y);
   }
   ic.globalAlpha = 1;
@@ -857,6 +886,11 @@ function renderLine(p, targetCanvas) {
 
   // 4. Elastic distortion
   id = elasticWarp(id, W, H, p.elasticamp, p.elasticsigma);
+  // pencil grain: high-frequency alpha modulation (graphite catching paper texture)
+  if (st.grain > 0) {
+    for (let i = 3; i < id.data.length; i += 4)
+      if (id.data[i]) id.data[i] *= 1 - st.grain * rand();
+  }
   ic.putImageData(id, 0, 0);
 
   // 5. Composite: paper + ruled lines + ink (tinted, with bleed)
@@ -889,9 +923,10 @@ function renderLine(p, targetCanvas) {
   tc.fillStyle = `rgb(${ir},${ig2},${ib})`;
   tc.fillRect(0, 0, W, H);
 
-  if (p.bleed > 0) {
+  const bleedPx = p.bleed * st.bleed;
+  if (bleedPx > 0.05) {
     ctx.save();
-    ctx.filter = `blur(${p.bleed}px)`;
+    ctx.filter = `blur(${bleedPx.toFixed(2)}px)`;
     ctx.globalAlpha = 0.55;
     ctx.drawImage(inkTinted, 0, 0);
     ctx.restore();
@@ -931,7 +966,7 @@ function scheduleRender() {
   clearTimeout(renderTimer);
   renderTimer = setTimeout(render, 60);
 }
-for (const id of [...SLIDERS, 'font', 'fontmode', 'inkcolor', 'papertint', 'seed']) {
+for (const id of [...SLIDERS, 'font', 'fontmode', 'inkcolor', 'inkstyle', 'papertint', 'seed']) {
   document.getElementById(id).addEventListener('input', scheduleRender);
 }
 document.getElementById('ruled').addEventListener('change', scheduleRender);
@@ -965,6 +1000,9 @@ document.querySelectorAll('.chip').forEach(chip => {
 
 /* ---------------- Drawing board (hand capture) ---------------- */
 const MKHEDRULI = [...'აბგდევზთიკლმნოპჟრსტუფქღყშჩცძწჭხჯჰ'];
+const PUNCT = [...'.,!?;:()-„"«»჻'];   // Georgian text uses Latin punctuation + „" / «» quotes + ჻ (U+10FB)
+const DIGITS = [...'0123456789'];      // Georgian uses Western Arabic numerals
+const DRAWKEYS = [...MKHEDRULI, ...PUNCT, ...DIGITS];
 const drawboard = document.getElementById('drawboard');
 const dc = document.getElementById('drawcanvas');
 const dctx = dc.getContext('2d');
@@ -1043,7 +1081,7 @@ function buildLetterGrid() {
   const wr = HAND.ensure(HAND.current);
   const drawnKeys = Object.keys(wr.words).filter(k => wr.words[k].samples.length)
     .filter(k => (drawMode === 'sentences') === k.includes(' '));
-  const keys = drawMode === 'letters' ? MKHEDRULI : [...new Set([...drawnKeys, curKey])];
+  const keys = drawMode === 'letters' ? DRAWKEYS : [...new Set([...drawnKeys, curKey])];
   for (const key of keys) {
     const n = sampleCount(key);
     const b = document.createElement('span');
@@ -1117,8 +1155,8 @@ document.getElementById('savestroke').addEventListener('click', () => {
   document.getElementById('drawstatus').textContent = `saved ${curKey} ✓`;
   refreshWriterUI();
   if (drawMode === 'letters' && document.getElementById('autoadvance').checked) {
-    // next letter with fewest samples (fills 33 first, then 2nd/3rd repetitions)
-    const next = [...MKHEDRULI].sort((a, b) => sampleCount(a) - sampleCount(b))[0];
+    // next key with fewest samples (fills all letters/punct/digits first, then repetitions)
+    const next = [...DRAWKEYS].sort((a, b) => sampleCount(a) - sampleCount(b))[0];
     selectKey(next);
   } else { buildLetterGrid(); drawGuides(); }
   if (document.getElementById('handmode').checked) scheduleRender();
@@ -1214,7 +1252,43 @@ const SAMPLE_WORDS = ('ხელნაწერი ტექსტი ქარ�
   'სიყვარული მეგობარი ბუნება მთა ზღვა მდინარე ქალაქი სოფელი გზა სახლი ოჯახი ბავშვი სკოლა ' +
   'უნივერსიტეტი მეცნიერება ხელოვნება მუსიკა პოეზია ისტორია მომავალი წარსული აწმყო ღვინო პური ' +
   'წყალი ცეცხლი მიწა ჰაერი ვარსკვლავი მთვარე მზე ღრუბელი წვიმა თოვლი ქარი ყვავილი ხე ფოთოლი ' +
-  'ჩიტი თევზი ცხენი ძაღლი კატა ადამიანი გული გონება სული ენა სიტყვა ასო ხმა ფერი შუქი ჩრდილი').split(' ');
+  'ჩიტი თევზი ცხენი ძაღლი კატა ადამიანი გული გონება სული ენა სიტყვა ასო ხმა ფერი შუქი ჩრდილი ' +
+  'ბათუმი ქუთაისი რუსთავი გორი ზუგდიდი თელავი მცხეთა კავკასია რიონი მტკვარი არაგვი ალაზანი ' +
+  'დედა მამა და ძმა ბებია ბაბუა შვილი ცოლი ქმარი დღე ღამე დილა საღამო შუადღე კვირა თვე წელი ' +
+  'გაზაფხული ზაფხული შემოდგომა ზამთარი პური ყველი ხაჭაპური მწვადი ჩურჩხელა ტყემალი ვაშლი ' +
+  'ვაზი ატამი ბროწეული თაფლი რძე ჩაი ყავა სუფრა სტუმარი მასპინძელი სიმღერა ცეკვა ფანდური ' +
+  'სალამური თეატრი კინო ბიბლიოთეკა მუზეუმი ეკლესია ციხე კოშკი ხიდი მოედანი ქუჩა ბაღი პარკი ' +
+  'მთავრობა კანონი სამართალი თავისუფლება მშვიდობა ომი ჯარი გმირი დროშა ჰიმნი ლექსი რომანი ' +
+  'მოთხრობა ზღაპარი ანდაზა გამოცანა სიცილი ტირილი ბედნიერება სევდა იმედი ოცნება ფიქრი').split(' ');
+
+// sentences with punctuation & numerals — the charset a real benchmark needs from day one
+const SAMPLE_SENTENCES = [
+  'გამარჯობა, როგორ ხარ?',
+  'დღეს კარგი ამინდია!',
+  'საქართველოს დედაქალაქი თბილისია.',
+  'წერილი მივიღე 1921 წელს.',
+  'შეხვედრა დაინიშნა 15:30 საათზე.',
+  'ფასი შეადგენს 25,50 ლარს.',
+  'ქართული ანბანი 33 ასოსგან შედგება.',
+  'რას ფიქრობ ამაზე?',
+  'მოდი, ერთად წავიდეთ ზღვაზე!',
+  'ის დაიბადა 1995 წლის 7 მარტს.',
+  'წიგნის მე-12 გვერდზე გადადი.',
+  'დილის 8 საათია — ავდექით!',
+  '„ვეფხისტყაოსანი" შოთა რუსთაველმა დაწერა.',
+  'ბათუმამდე 370 კილომეტრია.',
+  'გთხოვ, ფანჯარა დახურე; ცივა.',
+  'ეს ღირს 100 ლარი (ფასდაკლებით).',
+  'მან თქვა: „მალე დავბრუნდები".',
+  'ტელეფონის ნომერია 599 12 34 56.',
+  'გაკვეთილი იწყება 9:00-ზე და მთავრდება 10:45-ზე.',
+  'ყველაფერი კარგად იქნება!',
+  'რატომ არ მოხვედი გუშინ?',
+  'ზამთარში ტემპერატურა -5 გრადუსამდე ეცემა.',
+  'შენ ხარ ვენახი, ახლად აყვავებული.',
+  'თბილისი დაარსდა V საუკუნეში.',
+  'ხვალ, 20 ივლისს, წვიმაა მოსალოდნელი.',
+];
 
 document.getElementById('batch').addEventListener('click', async () => {
   const n = Math.min(2000, Math.max(1, parseInt(document.getElementById('batchn').value) || 50));
@@ -1231,11 +1305,16 @@ document.getElementById('batch').addEventListener('click', async () => {
   for (let i = 0; i < n; i++) {
     const p = { ...base };
     p.seed = Math.floor(Math.random() * 1e9);
-    // sample a random 2–5 word line for label diversity
-    const nw = 2 + Math.floor(Math.random() * 4);
-    const words = [];
-    for (let w = 0; w < nw; w++) words.push(pool[Math.floor(Math.random() * pool.length)]);
-    p.text = words.join(' ');
+    // 40% full sentences (punctuation + numerals), 60% random 2–5 word lines
+    if (Math.random() < 0.4) {
+      p.text = SAMPLE_SENTENCES[Math.floor(Math.random() * SAMPLE_SENTENCES.length)];
+    } else {
+      const nw = 2 + Math.floor(Math.random() * 4);
+      const words = [];
+      for (let w = 0; w < nw; w++) words.push(pool[Math.floor(Math.random() * pool.length)]);
+      // occasionally append punctuation the way real lines end
+      p.text = words.join(' ') + (Math.random() < 0.3 ? ['.', '!', '?', ','][Math.floor(Math.random() * 4)] : '');
+    }
     renderLine(p, off);
     const blob = await new Promise(res => off.toBlob(res, 'image/png'));
     const fname = `${String(i).padStart(5, '0')}.png`;
