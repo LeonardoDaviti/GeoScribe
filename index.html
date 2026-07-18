@@ -35,7 +35,19 @@
   header h1 .geo { color: var(--accent); }
   header .sub { color: var(--muted); font-size: 13px; }
   .layout { display: grid; grid-template-columns: 340px 1fr; gap: 0; min-height: calc(100vh - 70px); }
-  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    .controls, .stage { max-height: none !important; overflow: visible !important; }
+    .stage { padding: 16px 12px; }
+    header { padding: 18px 16px 12px; }
+    .controls { border-right: none; border-bottom: 1px solid var(--border); }
+    /* draw board scales to viewport; pointer coords already rescale via getBoundingClientRect */
+    #drawcanvas { width: 100%; height: auto; }
+    #drawboard { padding: 12px; }
+    .btn { padding: 12px 14px; }   /* bigger touch targets */
+    .chip { padding: 9px 15px; }
+    input[type=range] { height: 22px; }
+  }
 
   /* ---- Controls panel ---- */
   .controls {
@@ -277,14 +289,15 @@
         <div style="display:flex; gap:8px; align-items:center;">
           <span class="chip active" id="modeletters">letters</span>
           <span class="chip" id="modewords">words</span>
+          <span class="chip" id="modesentences">sentences</span>
           <button class="btn secondary" id="closedraw" style="width:auto; padding:6px 14px">✕ close</button>
         </div>
       </div>
       <div id="wordrow" style="display:none; margin-bottom:10px; gap:8px; align-items:center;">
-        <input type="text" id="wordinput" placeholder="type a Georgian word to draw…"
-          style="max-width:280px; font-family:'Noto Sans Georgian'; font-size:16px;">
+        <input type="text" id="wordinput" placeholder="type a Georgian word or sentence to draw…"
+          style="max-width:340px; font-family:'Noto Sans Georgian'; font-size:16px;">
         <button class="btn secondary" id="setword" style="width:auto; padding:8px 14px">set</button>
-        <button class="btn secondary" id="randword" style="width:auto; padding:8px 14px">🎲 random word</button>
+        <button class="btn secondary" id="randword" style="width:auto; padding:8px 14px">🎲 random</button>
       </div>
       <div id="lettergrid" style="display:flex; flex-wrap:wrap; gap:5px; margin-bottom:14px;"></div>
       <div style="display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start;">
@@ -736,13 +749,27 @@ function renderLine(p, targetCanvas) {
   p._writer = useHand ? writer : null;
   p._usedFont = p.fontmode === 'glyph' ? 'mixed' : sampleFont.id;
 
-  // tokenize: whole drawn words become single units, everything else letter units
+  // tokenize with greedy phrase matching: the longest drawn sentence/word starting at
+  // the current position becomes a single trajectory unit; residue falls back to letters
+  const MAXPHRASE = 8;
+  const toks = p.text.replace(/\n/g, ' ').split(' ');
   const units = [];
-  for (const word of p.text.replace(/\n/g, ' ').split(' ')) {
-    if (units.length) units.push({ space: true });
-    if (!word) continue;
-    if (wd && wd.words[word] && wd.words[word].samples.length) units.push({ word });
-    else for (const ch of [...word]) units.push({ ch });
+  for (let ti = 0; ti < toks.length; ti++) {
+    if (ti > 0) units.push({ space: true });
+    if (!toks[ti]) continue;
+    let matched = 0;
+    if (wd) {
+      for (let len = Math.min(MAXPHRASE, toks.length - ti); len >= 1; len--) {
+        const phrase = toks.slice(ti, ti + len).join(' ');
+        if (wd.words[phrase] && wd.words[phrase].samples.length) {
+          units.push({ word: phrase });
+          matched = len;
+          break;
+        }
+      }
+    }
+    if (matched) ti += matched - 1;
+    else for (const ch of [...toks[ti]]) units.push({ ch });
   }
 
   // 1. Measure & render each unit to its own canvas with random affine
@@ -941,8 +968,9 @@ const MKHEDRULI = [...'აბგდევზთიკლმნოპჟრსტ
 const drawboard = document.getElementById('drawboard');
 const dc = document.getElementById('drawcanvas');
 const dctx = dc.getContext('2d');
-let drawMode = 'letters';  // 'letters' | 'words'
-let curKey = 'ა';          // letter or word being drawn
+let drawMode = 'letters';  // 'letters' | 'words' | 'sentences'
+const storeKind = () => drawMode === 'letters' ? 'letters' : 'words'; // sentences live in the words store (keys with spaces)
+let curKey = 'ა';          // letter, word, or sentence being drawn
 let rawStrokes = [];       // strokes being drawn: [[{x,y,t}]]
 let liveStroke = null;
 
@@ -987,7 +1015,7 @@ function drawGuides() {
   dctx.fillStyle = '#fdfcf8'; dctx.fillRect(0, 0, dc.width, dc.height);
   // faint reference letter/word
   dctx.fillStyle = 'rgba(120,140,180,0.13)';
-  dctx.font = `${drawMode === 'letters' ? 220 : 110}px 'Noto Sans Georgian'`;
+  dctx.font = `${{ letters: 220, words: 110, sentences: 54 }[drawMode]}px 'Noto Sans Georgian'`;
   dctx.textAlign = 'center'; dctx.textBaseline = 'alphabetic';
   dctx.fillText(curKey, dc.width / 2, dc.height * HAND.BASE_FRAC);
   dctx.textAlign = 'start';
@@ -1006,15 +1034,16 @@ function drawGuides() {
 }
 function sampleCount(key) {
   const wr = HAND.ensure(HAND.current);
-  const rec = wr[drawMode][key];
+  const rec = wr[storeKind()][key];
   return rec ? rec.samples.length : 0;
 }
 function buildLetterGrid() {
   const grid = document.getElementById('lettergrid');
   grid.innerHTML = '';
   const wr = HAND.ensure(HAND.current);
-  const keys = drawMode === 'letters' ? MKHEDRULI
-    : [...new Set([...Object.keys(wr.words).filter(k => wr.words[k].samples.length), curKey])];
+  const drawnKeys = Object.keys(wr.words).filter(k => wr.words[k].samples.length)
+    .filter(k => (drawMode === 'sentences') === k.includes(' '));
+  const keys = drawMode === 'letters' ? MKHEDRULI : [...new Set([...drawnKeys, curKey])];
   for (const key of keys) {
     const n = sampleCount(key);
     const b = document.createElement('span');
@@ -1035,27 +1064,31 @@ function selectKey(key) {
 }
 function setDrawMode(m) {
   drawMode = m;
-  document.getElementById('modeletters').classList.toggle('active', m === 'letters');
-  document.getElementById('modewords').classList.toggle('active', m === 'words');
-  document.getElementById('wordrow').style.display = m === 'words' ? 'flex' : 'none';
-  dc.width = m === 'words' ? 680 : 340;   // wider canvas for whole words
-  dc.height = 340;
+  for (const mm of ['letters', 'words', 'sentences'])
+    document.getElementById('mode' + mm).classList.toggle('active', m === mm);
+  document.getElementById('wordrow').style.display = m === 'letters' ? 'none' : 'flex';
+  dc.width = { letters: 340, words: 680, sentences: 960 }[m];
+  dc.height = m === 'sentences' ? 300 : 340;
+  const wr = HAND.ensure(HAND.current);
   if (m === 'letters') curKey = MKHEDRULI[0];
   else {
-    const wr = HAND.ensure(HAND.current);
-    curKey = Object.keys(wr.words)[0] || 'გამარჯობა';
+    const drawn = Object.keys(wr.words).filter(k => (m === 'sentences') === k.includes(' '));
+    curKey = drawn[0] || (m === 'words' ? 'გამარჯობა' : 'გამარჯობა როგორ ხარ');
   }
   rawStrokes = []; liveStroke = null;
   buildLetterGrid(); drawGuides();
 }
-document.getElementById('modeletters').addEventListener('click', () => setDrawMode('letters'));
-document.getElementById('modewords').addEventListener('click', () => setDrawMode('words'));
+for (const mm of ['letters', 'words', 'sentences'])
+  document.getElementById('mode' + mm).addEventListener('click', () => setDrawMode(mm));
 document.getElementById('setword').addEventListener('click', () => {
-  const w = document.getElementById('wordinput').value.trim();
+  const w = document.getElementById('wordinput').value.trim().replace(/\s+/g, ' ');
   if (w) selectKey(w);
 });
 document.getElementById('randword').addEventListener('click', () => {
-  selectKey(SAMPLE_WORDS[Math.floor(Math.random() * SAMPLE_WORDS.length)]);
+  const pick = () => SAMPLE_WORDS[Math.floor(Math.random() * SAMPLE_WORDS.length)];
+  selectKey(drawMode === 'sentences'
+    ? Array.from({ length: 2 + Math.floor(Math.random() * 3) }, pick).join(' ')
+    : pick());
 });
 function canvasPos(e) {
   const r = dc.getBoundingClientRect();
@@ -1079,7 +1112,7 @@ dc.addEventListener('pointercancel', endStroke);
 
 document.getElementById('savestroke').addEventListener('click', () => {
   if (!rawStrokes.length) { document.getElementById('drawstatus').textContent = 'nothing drawn yet'; return; }
-  HAND.addSample(HAND.current, drawMode, curKey, rawStrokes, dc.height);
+  HAND.addSample(HAND.current, storeKind(), curKey, rawStrokes, dc.height);
   rawStrokes = [];
   document.getElementById('drawstatus').textContent = `saved ${curKey} ✓`;
   refreshWriterUI();
