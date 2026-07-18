@@ -118,9 +118,14 @@
 
     <div class="knob">
       <label>Font</label>
-      <select id="font">
-        <option value="'Noto Sans Georgian'">Noto Sans Georgian</option>
-        <option value="'Noto Serif Georgian'">Noto Serif Georgian</option>
+      <select id="font"></select>
+    </div>
+    <div class="knob">
+      <label>Font mode</label>
+      <select id="fontmode">
+        <option value="fixed">Fixed (selected font)</option>
+        <option value="sample" selected>Random handwriting font per sample</option>
+        <option value="glyph">Random handwriting font per glyph</option>
       </select>
     </div>
     <div class="row2">
@@ -269,6 +274,53 @@ const randn = () => { // Box–Muller
 };
 const uniform = (a, b) => a + rand() * (b - a);
 
+/* ---------------- Font registry ----------------
+   Local fonts verified for full Mkhedruli coverage (fontTools cmap + glyph-area check
+   + visual render inspection). `translit: true` fonts are legacy ASCII-mapped Georgian
+   fonts: their Mkhedruli glyphs live at Latin keyboard slots, so each Georgian char is
+   remapped before rendering. Excluded from the source folder: AZHEID, BPG-SSERIF,
+   GORDAN, LORTKIPN (contain only Latin glyphs), academiury (scrambled mapping),
+   barnaba, geo_script (nonstandard symbol cmap — tofu everywhere). */
+const FONTS = [
+  { id:'dm-ambrosi',              file:'fonts/dm-ambrosi.ttf',              label:'DM Ambrosi (hand)',              hand:true },
+  { id:'dm-davit-guramishvili',   file:'fonts/dm-davit-guramishvili.ttf',   label:'DM Davit Guramishvili (hand)',   hand:true },
+  { id:'dm-elene-akhvlediani',    file:'fonts/dm-elene-akhvlediani.ttf',    label:'DM Elene Akhvlediani (hand)',    hand:true },
+  { id:'dm-galaktioni',           file:'fonts/dm-galaktioni.ttf',           label:'DM Galaktioni (hand)',           hand:true },
+  { id:'dm-ilia',                 file:'fonts/dm-ilia.ttf',                 label:'DM Ilia (hand)',                 hand:true },
+  { id:'dm-ivane-javakhishvili',  file:'fonts/dm-ivane-javakhishvili.ttf',  label:'DM Ivane Javakhishvili (hand)',  hand:true },
+  { id:'dm-ivane-nanuashvili',    file:'fonts/dm-ivane-nanuashvili.ttf',    label:'DM Ivane Nanuashvili (hand)',    hand:true },
+  { id:'dm-mikhako-tsereteli',    file:'fonts/dm-mikhako-tsereteli.ttf',    label:'DM Mikhako Tsereteli (hand)',    hand:true },
+  { id:'dm-revaz',                file:'fonts/dm-revaz-moistsrapishvili.ttf', label:'DM Revaz Moistsrapishvili (hand)', hand:true },
+  { id:'3d-unicode',              file:'fonts/3d-unicode.ttf',              label:'3D Unicode (hand)',              hand:true },
+  { id:'calligraphy',             file:'fonts/calligraphy.ttf',             label:'Calligraphy (hand)',             hand:true,  translit:true },
+  { id:'mch-vardi',               file:'fonts/mch-vardi.otf',               label:'MCh Vardi (calligraphic)',       hand:true },
+  { id:'mch-vardi-serif',         file:'fonts/mch-vardi-serif.otf',         label:'MCh Vardi Serif (calligraphic)', hand:true },
+  { id:'gancxadebebi',            file:'fonts/gancxadebebi.ttf',            label:'Gancxadebebi (print)',           hand:false, translit:true },
+  { id:'kolkheti',                file:'fonts/kolkheti.ttf',                label:'Kolkheti (print)',               hand:false, translit:true },
+  { id:'bpg-glaho',               file:'fonts/bpg-glaho.ttf',               label:'BPG Glaho (print)',              hand:false },
+  { id:'bpg-nino-elite-caps',     file:'fonts/bpg-nino-elite-caps.otf',     label:'BPG Nino Elite Caps (mtavruli)', hand:false },
+  { id:'noto-sans',               label:'Noto Sans Georgian (print)',       family:"'Noto Sans Georgian'", hand:false },
+  { id:'noto-serif',              label:'Noto Serif Georgian (print)',      family:"'Noto Serif Georgian'", hand:false },
+];
+const FONT_BY_ID = Object.fromEntries(FONTS.map(f => [f.id, f]));
+const HAND_FONTS = FONTS.filter(f => f.hand);
+
+// standard Georgian keyboard transliteration (legacy ASCII-mapped fonts)
+const TRANSLIT = Object.fromEntries([...'აბგდევზთიკლმნოპჟრსტუფქღყშჩცძწჭხჯჰ'].map(
+  (ch, i) => [ch, ['a','b','g','d','e','v','z','T','i','k','l','m','n','o','p','J','r','s','t','u','f','q','R','y','S','C','c','Z','w','W','x','j','h'][i]]));
+
+function loadLocalFonts() {
+  const jobs = [];
+  for (const f of FONTS) {
+    if (!f.file) continue;
+    f.family = `'geo-${f.id}'`;
+    const face = new FontFace(`geo-${f.id}`, `url(${encodeURI(f.file)})`);
+    jobs.push(face.load().then(ff => { document.fonts.add(ff); })
+      .catch(() => { console.warn('font failed to load:', f.file); f.failed = true; }));
+  }
+  return Promise.allSettled(jobs);
+}
+
 /* ---------------- Params ---------------- */
 const SLIDERS = ['weight','fontsize','rot','scale','shear','slant','kern','overlap','overlapdepth',
   'baseamp','baseperiod','basewalk','elasticamp','elasticsigma','stroke','strokejit','inkjit','bleed','papernoise'];
@@ -276,6 +328,7 @@ function readParams() {
   const p = {};
   for (const id of SLIDERS) p[id] = parseFloat(document.getElementById(id).value);
   p.font = document.getElementById('font').value;
+  p.fontmode = document.getElementById('fontmode').value;
   p.inkcolor = document.getElementById('inkcolor').value;
   p.papertint = document.getElementById('papertint').value;
   p.ruled = document.getElementById('ruled').checked;
@@ -386,6 +439,13 @@ function hexToRgb(hex) {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
+function pickFontDef(p) {
+  const pool = HAND_FONTS.filter(f => !f.failed);
+  const fixed = FONT_BY_ID[p.font] || FONT_BY_ID['noto-sans'];
+  if (p.fontmode === 'fixed' || !pool.length) return fixed;
+  return pool[Math.floor(rand() * pool.length)];
+}
+
 function renderLine(p, targetCanvas) {
   rng = mulberry32(p.seed);
   const fs = p.fontsize;
@@ -393,18 +453,24 @@ function renderLine(p, targetCanvas) {
   const pad = Math.ceil(fs * 0.9);
   const glyphPad = Math.ceil(fs * 0.6);
 
+  // resolve font(s): fixed | one random handwriting font per sample | per glyph
+  const sampleFont = pickFontDef(p);
+  p._usedFont = p.fontmode === 'glyph' ? 'mixed' : sampleFont.id;
+
   // 1. Measure & render each glyph to its own canvas with random affine
   const meas = document.createElement('canvas').getContext('2d');
-  meas.font = `${p.weight} ${fs}px ${p.font}`;
   const glyphs = [];
   for (const ch of chars) {
     if (ch === ' ') { glyphs.push({ space: true, adv: fs * uniform(0.3, 0.5) }); continue; }
-    const m = meas.measureText(ch);
+    const fd = p.fontmode === 'glyph' ? pickFontDef(p) : sampleFont;
+    const drawCh = fd.translit ? (TRANSLIT[ch] || ch) : ch;
+    meas.font = `${p.weight} ${fs}px ${fd.family}`;
+    const m = meas.measureText(drawCh);
     const gw = Math.ceil(m.width) + glyphPad * 2, gh = Math.ceil(fs * 1.8) + glyphPad * 2;
     const gc = document.createElement('canvas');
     gc.width = gw; gc.height = gh;
     const g = gc.getContext('2d');
-    g.font = `${p.weight} ${fs}px ${p.font}`;
+    g.font = `${p.weight} ${fs}px ${fd.family}`;
     g.textBaseline = 'alphabetic';
     // affine about glyph center
     const cx = gw / 2, cy = gh / 2;
@@ -417,7 +483,7 @@ function renderLine(p, targetCanvas) {
     g.transform(1, 0, -shx, 1, 0, 0);
     g.translate(-cx, -cy);
     g.fillStyle = '#000';
-    g.fillText(ch, glyphPad, gh / 2 + fs * 0.35);
+    g.fillText(drawCh, glyphPad, gh / 2 + fs * 0.35);
     // per-glyph stroke width jitter
     if (rand() < p.strokejit) {
       const op = rand() < 0.5 ? -1 : 1;
@@ -508,6 +574,15 @@ function renderLine(p, targetCanvas) {
 const canvas = document.getElementById('canvas');
 const statusEl = document.getElementById('status');
 
+/* populate font select */
+const fontSel = document.getElementById('font');
+for (const f of FONTS) {
+  const o = document.createElement('option');
+  o.value = f.id; o.textContent = f.label;
+  fontSel.appendChild(o);
+}
+fontSel.value = 'dm-galaktioni';
+
 function updateLabels() {
   for (const id of SLIDERS) {
     const el = document.getElementById('v_' + id);
@@ -518,14 +593,15 @@ let renderTimer = null;
 function render() {
   updateLabels();
   const t0 = performance.now();
-  renderLine(readParams(), canvas);
-  statusEl.textContent = `rendered ${canvas.width}×${canvas.height} in ${(performance.now() - t0).toFixed(0)} ms · seed ${readParams().seed}`;
+  const p = readParams();
+  renderLine(p, canvas);
+  statusEl.textContent = `rendered ${canvas.width}×${canvas.height} in ${(performance.now() - t0).toFixed(0)} ms · seed ${p.seed} · font ${p._usedFont}`;
 }
 function scheduleRender() {
   clearTimeout(renderTimer);
   renderTimer = setTimeout(render, 60);
 }
-for (const id of [...SLIDERS, 'font', 'inkcolor', 'papertint', 'seed']) {
+for (const id of [...SLIDERS, 'font', 'fontmode', 'inkcolor', 'papertint', 'seed']) {
   document.getElementById(id).addEventListener('input', scheduleRender);
 }
 document.getElementById('ruled').addEventListener('change', scheduleRender);
@@ -585,7 +661,7 @@ document.getElementById('batch').addEventListener('click', async () => {
     const blob = await new Promise(res => off.toBlob(res, 'image/png'));
     const fname = `${String(i).padStart(5, '0')}.png`;
     imgs.file(fname, blob);
-    labels.push(JSON.stringify({ file: 'images/' + fname, text: p.text, seed: p.seed }));
+    labels.push(JSON.stringify({ file: 'images/' + fname, text: p.text, seed: p.seed, font: p._usedFont }));
     prog.value = (i + 1) / n;
     if (i % 5 === 0) await new Promise(r => setTimeout(r, 0)); // keep UI alive
   }
@@ -600,9 +676,9 @@ document.getElementById('batch').addEventListener('click', async () => {
   statusEl.textContent = `dataset exported: ${n} samples + labels.jsonl`;
 });
 
-/* initial render once fonts are ready */
-document.fonts.ready.then(() => setTimeout(render, 50));
-render();
+/* initial render once all fonts (local + Google) are loaded */
+statusEl.textContent = 'loading fonts…';
+loadLocalFonts().then(() => document.fonts.ready).then(() => setTimeout(render, 50));
 </script>
 </body>
 </html>

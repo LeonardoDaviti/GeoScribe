@@ -47,4 +47,23 @@ Ready to feed into HTR training or upload to Hugging Face.
 
 ## Fonts
 
-Uses Noto Sans/Serif Georgian via Google Fonts (OFL-licensed).
+19 verified Mkhedruli styles: 13 handwriting/calligraphic hands (DM writer-hand fonts,
+3D Unicode, Calligraphy, MCh Vardi ×2) + 6 print styles (BPG Glaho, BPG Nino Elite Caps
+(Mtavruli), Gancxadebebi, Kolkheti, Noto Sans/Serif Georgian via Google Fonts).
+
+Every local font in `fonts/` was validated with fontTools (full U+10D0–U+10F0 cmap
+coverage + non-empty glyph outlines) plus a visual render check. Three fonts are legacy
+ASCII-mapped Georgian fonts; the generator transliterates each character to its Latin
+keyboard slot before rendering (standard Georgian keyboard mapping). Rejected from the
+source collection: 4 fonts containing only Latin glyphs, 1 with a scrambled mapping,
+2 with nonstandard symbol cmaps (tofu).
+
+**Font modes** (research-motivated — style *diversity* beats per-sample realism for
+downstream HTR pretraining, cf. "Quo Vadis HTG for HTR?", ICCV 2025):
+- fixed font,
+- random handwriting font per sample (default; the font id is recorded in `labels.jsonl`),
+- random handwriting font per glyph (maximum diversity, unrealistic but useful).
+
+⚠️ **License note:** Noto is OFL. The licenses of the DM / MCh / BPG / legacy fonts in
+`fonts/` have not been verified — check before publishing rendered datasets or hosting
+the fonts publicly.
