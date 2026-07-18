@@ -214,6 +214,26 @@
       </div>
     </details>
 
+    <details class="group" open>
+      <summary>Your hand (Stage B)</summary>
+      <div class="body">
+        <div class="checkline"><input type="checkbox" id="handmode"> <label for="handmode">Generate from my drawings</label></div>
+        <div class="knob"><label>Motor jitter σ (em) <span class="val" id="v_handjitter">0.02</span></label>
+          <input type="range" id="handjitter" min="0" max="0.08" step="0.002" value="0.02"></div>
+        <div class="knob"><label>Pen width (em) <span class="val" id="v_penw">0.055</span></label>
+          <input type="range" id="penw" min="0.02" max="0.14" step="0.005" value="0.055"></div>
+        <div class="knob"><label>Speed thinning <span class="val" id="v_speedthin">0.5</span></label>
+          <input type="range" id="speedthin" min="0" max="1" step="0.05" value="0.5"></div>
+        <button class="btn secondary" id="opendraw" style="margin-top:6px">✍ Open drawing board</button>
+        <div class="btnrow">
+          <button class="btn secondary" id="exportprofile">⬆ Export JSON</button>
+          <button class="btn secondary" id="importprofile">⬇ Import JSON</button>
+        </div>
+        <input type="file" id="importfile" accept=".json" style="display:none">
+        <p class="status" id="handstatus" style="margin-top:8px"></p>
+      </div>
+    </details>
+
     <div class="row2">
       <div class="knob"><label>Seed <span class="val" id="v_seed"></span></label>
         <input type="number" id="seed" value="1337"></div>
@@ -237,6 +257,36 @@
       <span class="chip" data-preset="casual">casual hand</span>
       <span class="chip" data-preset="rushed">rushed scrawl</span>
       <span class="chip" data-preset="drunk">chaotic</span>
+    </div>
+    <div id="drawboard" style="display:none; background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <strong style="font-size:14px">Drawing board — write each letter 3× for motor-variability morphing</strong>
+        <button class="btn secondary" id="closedraw" style="width:auto; padding:6px 14px">✕ close</button>
+      </div>
+      <div id="lettergrid" style="display:flex; flex-wrap:wrap; gap:5px; margin-bottom:14px;"></div>
+      <div style="display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start;">
+        <div>
+          <canvas id="drawcanvas" width="340" height="340" style="background:#fdfcf8; border-radius:10px; cursor:crosshair; touch-action:none;"></canvas>
+          <div style="display:flex; gap:8px; margin-top:10px;">
+            <button class="btn" id="savestroke" style="width:auto; flex:1">💾 Save sample</button>
+            <button class="btn secondary" id="undostroke" style="width:auto">↩ undo</button>
+            <button class="btn secondary" id="clearstroke" style="width:auto">✕ clear</button>
+          </div>
+        </div>
+        <div style="max-width:330px">
+          <p style="font-size:34px; margin-bottom:6px">target: <span id="targetletter" style="font-family:'Noto Sans Georgian'; color:var(--accent)">ა</span>
+            <span class="status" id="targetcount"></span></p>
+          <p class="footer-note" style="margin-bottom:8px">
+            Draw between the guide lines (baseline is the lower one). Strokes are captured as
+            (x, y, t) trajectories — timing gives real pen speed, so generated strokes thin out
+            on fast segments. Each extra sample of a letter improves variability: generation
+            morphs between random pairs of your samples and adds smooth correlated noise.
+          </p>
+          <div class="checkline"><input type="checkbox" id="autoadvance" checked> <label for="autoadvance">auto-advance to next letter after save</label></div>
+          <button class="btn secondary" id="wipeprofile" style="margin-top:8px">🗑 delete all my samples</button>
+          <p class="status" id="drawstatus" style="margin-top:8px"></p>
+        </div>
+      </div>
     </div>
     <div class="canvas-wrap"><canvas id="canvas"></canvas></div>
     <p class="footer-note">
@@ -323,7 +373,8 @@ function loadLocalFonts() {
 
 /* ---------------- Params ---------------- */
 const SLIDERS = ['weight','fontsize','rot','scale','shear','slant','kern','overlap','overlapdepth',
-  'baseamp','baseperiod','basewalk','elasticamp','elasticsigma','stroke','strokejit','inkjit','bleed','papernoise'];
+  'baseamp','baseperiod','basewalk','elasticamp','elasticsigma','stroke','strokejit','inkjit','bleed','papernoise',
+  'handjitter','penw','speedthin'];
 function readParams() {
   const p = {};
   for (const id of SLIDERS) p[id] = parseFloat(document.getElementById(id).value);
@@ -332,6 +383,7 @@ function readParams() {
   p.inkcolor = document.getElementById('inkcolor').value;
   p.papertint = document.getElementById('papertint').value;
   p.ruled = document.getElementById('ruled').checked;
+  p.handmode = document.getElementById('handmode').checked;
   p.text = document.getElementById('text').value;
   p.seed = parseInt(document.getElementById('seed').value) || 0;
   return p;
@@ -433,6 +485,154 @@ function morphAlpha(imgData, w, h, op) { // op: +1 dilate, -1 erode, one 3x3 pas
   return new ImageData(out, w, h);
 }
 
+/* ---------------- HAND: stroke-based letters from user drawings (Stage B) ----------------
+   Storage format per letter sample: { strokes: [ [ {x, y, v}, ... N pts ] ], w }
+   Coordinates are in em units with the baseline at y=0 (up is negative), x from 0.
+   v is normalized pen speed in [0, 1] derived from real pointer timestamps.
+   Generation: morph between two random samples (when stroke counts match) + smooth
+   correlated 1D noise on the point sequence = cheap motor-variability model. */
+const HAND = {
+  profile: {},           // letter -> { samples: [...] }
+  LS_KEY: 'geoscribe_hand_profile_v1',
+  N: 44,                 // resampled points per stroke
+  BOX_EM: 0.5,           // 1 em = this fraction of the drawing box height
+  BASE_FRAC: 0.70,       // baseline guide position in the box
+
+  has(ch) { return !!(this.profile[ch] && this.profile[ch].samples.length); },
+  counts() {
+    const letters = Object.keys(this.profile).filter(ch => this.has(ch));
+    const samples = letters.reduce((s, ch) => s + this.profile[ch].samples.length, 0);
+    return { letters: letters.length, samples };
+  },
+  load() {
+    try { this.profile = JSON.parse(localStorage.getItem(this.LS_KEY)) || {}; }
+    catch (e) { this.profile = {}; }
+  },
+  persist() { localStorage.setItem(this.LS_KEY, JSON.stringify(this.profile)); },
+
+  // raw: array of strokes, each [{x, y, t}] in canvas px of a box of height boxH
+  addSample(ch, raw, boxH) {
+    const em = boxH * this.BOX_EM;
+    const baseY = boxH * this.BASE_FRAC;
+    let minX = Infinity, maxX = -Infinity;
+    for (const s of raw) for (const pt of s) { minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x); }
+    const strokes = raw.map(s => this.resample(s)).map(s =>
+      s.map(pt => ({ x: (pt.x - minX) / em, y: (pt.y - baseY) / em, v: pt.v })));
+    const w = (maxX - minX) / em;
+    if (!this.profile[ch]) this.profile[ch] = { samples: [] };
+    this.profile[ch].samples.push({ strokes, w });
+    this.persist();
+  },
+
+  // arc-length-uniform resampling to N points, carrying normalized speed
+  resample(pts) {
+    if (pts.length < 2) {
+      const p = pts[0] || { x: 0, y: 0 };
+      return Array.from({ length: this.N }, () => ({ x: p.x, y: p.y, v: 0.5 }));
+    }
+    // per-point speed from timestamps, then median-normalize
+    const sp = [0];
+    for (let i = 1; i < pts.length; i++) {
+      const d = Math.hypot(pts[i].x - pts[i-1].x, pts[i].y - pts[i-1].y);
+      const dt = Math.max(1, pts[i].t - pts[i-1].t);
+      sp.push(d / dt);
+    }
+    sp[0] = sp[1];
+    const med = [...sp].sort((a, b) => a - b)[sp.length >> 1] || 1;
+    const vn = sp.map(v => Math.min(1, v / (2 * med + 1e-9)));
+    // cumulative arc length
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++)
+      cum.push(cum[i-1] + Math.hypot(pts[i].x - pts[i-1].x, pts[i].y - pts[i-1].y));
+    const L = cum[cum.length - 1] || 1;
+    const out = [];
+    let j = 0;
+    for (let k = 0; k < this.N; k++) {
+      const target = L * k / (this.N - 1);
+      while (j < pts.length - 2 && cum[j + 1] < target) j++;
+      const seg = cum[j + 1] - cum[j] || 1;
+      const u = Math.min(1, Math.max(0, (target - cum[j]) / seg));
+      out.push({
+        x: pts[j].x + (pts[j+1].x - pts[j].x) * u,
+        y: pts[j].y + (pts[j+1].y - pts[j].y) * u,
+        v: vn[j] + (vn[j+1] - vn[j]) * u,
+      });
+    }
+    return out;
+  },
+
+  // smooth correlated noise sequence: white noise box-blurred 3x
+  smoothNoise(n, sigma) {
+    let a = Array.from({ length: n }, () => randn());
+    const r = 6;
+    for (let pass = 0; pass < 3; pass++) {
+      const b = new Array(n);
+      for (let i = 0; i < n; i++) {
+        let s = 0, c = 0;
+        for (let k = -r; k <= r; k++) {
+          const idx = i + k;
+          if (idx >= 0 && idx < n) { s += a[idx]; c++; }
+        }
+        b[i] = s / c;
+      }
+      a = b;
+    }
+    // blur shrinks variance; renormalize to sigma
+    const rms = Math.sqrt(a.reduce((s, v) => s + v * v, 0) / n) || 1;
+    return a.map(v => v / rms * sigma);
+  },
+
+  // returns {strokes: [[{x,y,v}]], w} — a fresh instance of the letter in em units
+  sampleInstance(ch, p) {
+    const samples = this.profile[ch].samples;
+    let inst;
+    const a = samples[Math.floor(rand() * samples.length)];
+    const b = samples[Math.floor(rand() * samples.length)];
+    if (a !== b && a.strokes.length === b.strokes.length) {
+      const u = uniform(0.15, 0.85); // morph between two real executions
+      inst = {
+        w: a.w * (1 - u) + b.w * u,
+        strokes: a.strokes.map((s, si) => s.map((pt, i) => ({
+          x: pt.x * (1 - u) + b.strokes[si][i].x * u,
+          y: pt.y * (1 - u) + b.strokes[si][i].y * u,
+          v: pt.v * (1 - u) + b.strokes[si][i].v * u,
+        }))),
+      };
+    } else {
+      inst = { w: a.w, strokes: a.strokes.map(s => s.map(pt => ({ ...pt }))) };
+    }
+    // correlated motor noise
+    if (p.handjitter > 0) {
+      inst.strokes = inst.strokes.map(s => {
+        const nx = this.smoothNoise(s.length, p.handjitter);
+        const ny = this.smoothNoise(s.length, p.handjitter);
+        return s.map((pt, i) => ({ x: pt.x + nx[i], y: pt.y + ny[i], v: pt.v }));
+      });
+    }
+    return inst;
+  },
+
+  // draw instance into a glyph context; (x0, baseY) = pen origin in px, fs = em px
+  draw(g, inst, x0, baseY, p, fs) {
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    g.strokeStyle = '#000';
+    for (const s of inst.strokes) {
+      for (let i = 1; i < s.length; i++) {
+        const v = (s[i-1].v + s[i].v) / 2;
+        // sigma-lognormal-flavored: fast segments thin, slow segments thick
+        const wmul = Math.min(1.8, Math.max(0.3, 1.25 - p.speedthin * 1.4 * v));
+        g.lineWidth = Math.max(0.6, p.penw * fs * wmul);
+        g.beginPath();
+        g.moveTo(x0 + s[i-1].x * fs, baseY + s[i-1].y * fs);
+        g.lineTo(x0 + s[i].x * fs, baseY + s[i].y * fs);
+        g.stroke();
+      }
+    }
+  },
+};
+HAND.load();
+
 /* ---------------- Main render ---------------- */
 function hexToRgb(hex) {
   const n = parseInt(hex.slice(1), 16);
@@ -455,7 +655,8 @@ function renderLine(p, targetCanvas) {
 
   // resolve font(s): fixed | one random handwriting font per sample | per glyph
   const sampleFont = pickFontDef(p);
-  p._usedFont = p.fontmode === 'glyph' ? 'mixed' : sampleFont.id;
+  const useHand = p.handmode && HAND.counts().letters > 0;
+  p._usedFont = (useHand ? 'hand+' : '') + (p.fontmode === 'glyph' ? 'mixed' : sampleFont.id);
 
   // 1. Measure & render each glyph to its own canvas with random affine
   const meas = document.createElement('canvas').getContext('2d');
@@ -464,9 +665,15 @@ function renderLine(p, targetCanvas) {
     if (ch === ' ') { glyphs.push({ space: true, adv: fs * uniform(0.3, 0.5) }); continue; }
     const fd = p.fontmode === 'glyph' ? pickFontDef(p) : sampleFont;
     const drawCh = fd.translit ? (TRANSLIT[ch] || ch) : ch;
-    meas.font = `${p.weight} ${fs}px ${fd.family}`;
-    const m = meas.measureText(drawCh);
-    const gw = Math.ceil(m.width) + glyphPad * 2, gh = Math.ceil(fs * 1.8) + glyphPad * 2;
+    const handInst = (useHand && HAND.has(ch)) ? HAND.sampleInstance(ch, p) : null;
+    let advW;
+    if (handInst) {
+      advW = handInst.w * fs;
+    } else {
+      meas.font = `${p.weight} ${fs}px ${fd.family}`;
+      advW = meas.measureText(drawCh).width;
+    }
+    const gw = Math.ceil(advW) + glyphPad * 2, gh = Math.ceil(fs * 1.8) + glyphPad * 2;
     const gc = document.createElement('canvas');
     gc.width = gw; gc.height = gh;
     const g = gc.getContext('2d');
@@ -483,14 +690,15 @@ function renderLine(p, targetCanvas) {
     g.transform(1, 0, -shx, 1, 0, 0);
     g.translate(-cx, -cy);
     g.fillStyle = '#000';
-    g.fillText(drawCh, glyphPad, gh / 2 + fs * 0.35);
+    if (handInst) HAND.draw(g, handInst, glyphPad, gh / 2 + fs * 0.35, p, fs);
+    else g.fillText(drawCh, glyphPad, gh / 2 + fs * 0.35);
     // per-glyph stroke width jitter
     if (rand() < p.strokejit) {
       const op = rand() < 0.5 ? -1 : 1;
       const id = g.getImageData(0, 0, gw, gh);
       g.putImageData(morphAlpha(id, gw, gh, op), 0, 0);
     }
-    glyphs.push({ canvas: gc, adv: m.width, pad: glyphPad });
+    glyphs.push({ canvas: gc, adv: advW, pad: glyphPad });
   }
 
   // 2. Compose along drifting baseline with kerning jitter / overlaps
@@ -632,6 +840,131 @@ document.querySelectorAll('.chip').forEach(chip => {
     render();
   });
 });
+
+/* ---------------- Drawing board (hand capture) ---------------- */
+const MKHEDRULI = [...'აბგდევზთიკლმნოპჟრსტუფქღყშჩცძწჭხჯჰ'];
+const drawboard = document.getElementById('drawboard');
+const dc = document.getElementById('drawcanvas');
+const dctx = dc.getContext('2d');
+let curLetter = 'ა';
+let rawStrokes = [];   // strokes being drawn: [[{x,y,t}]]
+let liveStroke = null;
+
+function handStatus() {
+  const c = HAND.counts();
+  document.getElementById('handstatus').textContent =
+    c.letters ? `profile: ${c.letters}/33 letters, ${c.samples} samples` : 'no samples yet — open the drawing board';
+}
+function drawGuides() {
+  dctx.clearRect(0, 0, dc.width, dc.height);
+  dctx.fillStyle = '#fdfcf8'; dctx.fillRect(0, 0, dc.width, dc.height);
+  // faint reference letter
+  dctx.fillStyle = 'rgba(120,140,180,0.13)';
+  dctx.font = `220px 'Noto Sans Georgian'`;
+  dctx.textAlign = 'center'; dctx.textBaseline = 'alphabetic';
+  dctx.fillText(curLetter, dc.width / 2, dc.height * HAND.BASE_FRAC);
+  dctx.textAlign = 'start';
+  // guide lines: x-height-ish and baseline
+  dctx.strokeStyle = 'rgba(90,130,200,0.4)'; dctx.lineWidth = 1;
+  for (const f of [0.30, HAND.BASE_FRAC]) {
+    dctx.beginPath(); dctx.moveTo(0, dc.height * f); dctx.lineTo(dc.width, dc.height * f); dctx.stroke();
+  }
+  // replay strokes drawn so far
+  dctx.strokeStyle = '#1a1c2e'; dctx.lineWidth = 3.5; dctx.lineCap = 'round'; dctx.lineJoin = 'round';
+  for (const s of rawStrokes.concat(liveStroke ? [liveStroke] : [])) {
+    dctx.beginPath();
+    s.forEach((pt, i) => i ? dctx.lineTo(pt.x, pt.y) : dctx.moveTo(pt.x, pt.y));
+    dctx.stroke();
+  }
+}
+function buildLetterGrid() {
+  const grid = document.getElementById('lettergrid');
+  grid.innerHTML = '';
+  for (const ch of MKHEDRULI) {
+    const n = HAND.has(ch) ? HAND.profile[ch].samples.length : 0;
+    const b = document.createElement('span');
+    b.className = 'chip' + (ch === curLetter ? ' active' : '');
+    b.style.fontFamily = "'Noto Sans Georgian'";
+    b.textContent = ch + (n ? ` ${n}` : '');
+    if (n >= 3) b.style.borderColor = '#3fa96b';
+    else if (n > 0) b.style.borderColor = '#c9a13f';
+    b.addEventListener('click', () => selectLetter(ch));
+    grid.appendChild(b);
+  }
+  document.getElementById('targetletter').textContent = curLetter;
+  document.getElementById('targetcount').textContent =
+    HAND.has(curLetter) ? `(${HAND.profile[curLetter].samples.length} saved)` : '(0 saved)';
+}
+function selectLetter(ch) {
+  curLetter = ch; rawStrokes = []; liveStroke = null;
+  buildLetterGrid(); drawGuides();
+}
+function canvasPos(e) {
+  const r = dc.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * dc.width / r.width, y: (e.clientY - r.top) * dc.height / r.height, t: performance.now() };
+}
+dc.addEventListener('pointerdown', e => {
+  e.preventDefault(); dc.setPointerCapture(e.pointerId);
+  liveStroke = [canvasPos(e)];
+});
+dc.addEventListener('pointermove', e => {
+  if (!liveStroke) return;
+  liveStroke.push(canvasPos(e)); drawGuides();
+});
+const endStroke = e => {
+  if (!liveStroke) return;
+  if (liveStroke.length > 1) rawStrokes.push(liveStroke);
+  liveStroke = null; drawGuides();
+};
+dc.addEventListener('pointerup', endStroke);
+dc.addEventListener('pointercancel', endStroke);
+
+document.getElementById('savestroke').addEventListener('click', () => {
+  if (!rawStrokes.length) { document.getElementById('drawstatus').textContent = 'nothing drawn yet'; return; }
+  HAND.addSample(curLetter, rawStrokes, dc.height);
+  rawStrokes = [];
+  document.getElementById('drawstatus').textContent = `saved ${curLetter} ✓`;
+  handStatus();
+  if (document.getElementById('autoadvance').checked) {
+    // next letter with fewest samples (fills 33 first, then 2nd/3rd repetitions)
+    const next = [...MKHEDRULI].sort((a, b) =>
+      (HAND.has(a) ? HAND.profile[a].samples.length : 0) - (HAND.has(b) ? HAND.profile[b].samples.length : 0))[0];
+    selectLetter(next);
+  } else buildLetterGrid(), drawGuides();
+  if (document.getElementById('handmode').checked) scheduleRender();
+});
+document.getElementById('undostroke').addEventListener('click', () => { rawStrokes.pop(); drawGuides(); });
+document.getElementById('clearstroke').addEventListener('click', () => { rawStrokes = []; liveStroke = null; drawGuides(); });
+document.getElementById('opendraw').addEventListener('click', () => {
+  drawboard.style.display = 'block';
+  document.fonts.ready.then(() => { buildLetterGrid(); drawGuides(); });
+});
+document.getElementById('closedraw').addEventListener('click', () => { drawboard.style.display = 'none'; });
+document.getElementById('wipeprofile').addEventListener('click', () => {
+  if (!confirm('Delete ALL your drawn samples?')) return;
+  HAND.profile = {}; HAND.persist(); handStatus(); buildLetterGrid(); drawGuides(); scheduleRender();
+});
+document.getElementById('exportprofile').addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.download = 'geoscribe_hand_profile.json';
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(HAND.profile)], { type: 'application/json' }));
+  a.click();
+});
+document.getElementById('importprofile').addEventListener('click', () => document.getElementById('importfile').click());
+document.getElementById('importfile').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  f.text().then(txt => {
+    try {
+      HAND.profile = JSON.parse(txt); HAND.persist();
+      handStatus(); buildLetterGrid(); drawGuides();
+      document.getElementById('handmode').checked = true;
+      render();
+    } catch (err) { document.getElementById('handstatus').textContent = 'import failed: not valid JSON'; }
+  });
+});
+document.getElementById('handmode').addEventListener('change', scheduleRender);
+handStatus();
 
 /* ---------------- Batch dataset export ---------------- */
 const SAMPLE_WORDS = ('ხელნაწერი ტექსტი ქართული ენა ანბანი მთაწმინდა თბილისი საქართველო წიგნი ' +

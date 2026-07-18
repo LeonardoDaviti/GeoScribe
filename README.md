@@ -38,11 +38,26 @@ params.json         # the generator configuration used
 
 Ready to feed into HTR training or upload to Hugging Face.
 
+## Drawing mode (Stage B: your hand as a generative model)
+
+The **drawing board** captures each of the 33 Mkhedruli letters as pointer-event
+trajectories — real (x, y, t) online handwriting data, not pixels:
+
+- strokes are arc-length resampled (44 pts) with **real pen speed** carried per point,
+  normalized against the median velocity;
+- draw each letter ≥2× and generation **morphs between random pairs of your executions**
+  plus smooth correlated noise — a cheap measured motor-variability model;
+- rendering thins strokes on fast segments (sigma-lognormal-flavored pen model),
+  with `pen width`, `speed thinning`, and `motor jitter` knobs;
+- hand glyphs flow through the *same* Stage A composition pipeline (baseline drift,
+  overlaps, elastic field, ink model); letters without samples fall back to fonts;
+- the writer profile persists in localStorage and can be exported/imported as a small
+  JSON file — one file ≈ one writer.
+
 ## Roadmap
 
-- **Stage B** — stroke-based letters: each of the 33 Mkhedruli letters as Bézier control
-  points; correlated control-point noise (motor variability), joining splines (true cursive),
-  speed-dependent pen thickness (sigma-lognormal-inspired).
+- **Stage B+** — joining splines between letter exit/entry points (true cursive);
+  per-letter mean-shape + covariance estimation once ≥5 samples exist.
 - **Stage C** — small trajectory RNN/diffusion trained on parametric + real scanned samples.
 
 ## Fonts
