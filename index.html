@@ -1060,9 +1060,11 @@ document.querySelectorAll('.chip').forEach(chip => {
 
 /* ---------------- Drawing board (hand capture) ---------------- */
 const MKHEDRULI = [...'აბგდევზთიკლმნოპჟრსტუფქღყშჩცძწჭხჯჰ'];
+// Charset for GENERATION (fonts render these; per-font tofu fallback applies).
+// The letters drawing grid stays 33 letters only — punctuation/digits are drawn
+// optionally via words/sentences mode (e.g. set "12!" or a sentence as the key).
 const PUNCT = [...'.,!?;:…()-„"«»჻'];  // Georgian: Latin punctuation + „" / «» quotes + ჻ (U+10FB); NO apostrophe (unused in Georgian)
 const DIGITS = [...'0123456789'];      // Georgian uses Western Arabic numerals
-const DRAWKEYS = [...MKHEDRULI, ...PUNCT, ...DIGITS];
 const drawboard = document.getElementById('drawboard');
 const dc = document.getElementById('drawcanvas');
 const dctx = dc.getContext('2d');
@@ -1211,7 +1213,7 @@ function buildLetterGrid() {
   const wr = HAND.ensure(HAND.current);
   const drawnKeys = Object.keys(wr.words).filter(k => wr.words[k].samples.length)
     .filter(k => (drawMode === 'sentences') === k.includes(' '));
-  const keys = drawMode === 'letters' ? DRAWKEYS : [...new Set([...drawnKeys, curKey])];
+  const keys = drawMode === 'letters' ? MKHEDRULI : [...new Set([...drawnKeys, curKey])];
   for (const key of keys) {
     const n = sampleCount(key);
     const b = document.createElement('span');
@@ -1295,8 +1297,8 @@ document.getElementById('savestroke').addEventListener('click', () => {
   document.getElementById('drawstatus').textContent = `saved ${curKey} ✓`;
   refreshWriterUI();
   if (drawMode === 'letters' && document.getElementById('autoadvance').checked) {
-    // next key with fewest samples (fills all letters/punct/digits first, then repetitions)
-    const next = [...DRAWKEYS].sort((a, b) => sampleCount(a) - sampleCount(b))[0];
+    // next letter with fewest samples (fills all 33 first, then repetitions)
+    const next = [...MKHEDRULI].sort((a, b) => sampleCount(a) - sampleCount(b))[0];
     selectKey(next);
   } else { buildLetterGrid(); drawGuides(); }
   if (document.getElementById('handmode').checked) scheduleRender();
