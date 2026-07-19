@@ -44,7 +44,7 @@ def main():
             f.flush()
             if i % 10 == 0:
                 print(f"pass {i}/{passes} total_chars={total_chars}", file=sys.stderr)
-            time.sleep(0.5)
+            time.sleep(0.3)
     print("done total_chars", total_chars, file=sys.stderr)
 
 if __name__ == "__main__":
