@@ -273,6 +273,30 @@
       </div>
     </details>
 
+    <details class="group">
+      <summary>Export options</summary>
+      <div class="body">
+        <div class="knob"><label>Format</label>
+          <select id="exportformat">
+            <option value="image/webp" selected>WebP q0.85 (~10–25 KB/image)</option>
+            <option value="image/jpeg">JPEG</option>
+            <option value="image/png">PNG (lossless, ~300 KB/image)</option>
+          </select></div>
+        <div class="knob"><label>Quality <span class="val" id="v_exportq">0.85</span></label>
+          <input type="range" id="exportq" min="0.5" max="1" step="0.05" value="0.85"></div>
+        <div class="knob"><label>Image height</label>
+          <select id="exportheight">
+            <option value="48">48 px — training size</option>
+            <option value="64" selected>64 px — training size</option>
+            <option value="96">96 px</option>
+            <option value="128">128 px</option>
+            <option value="0">full render (no downscale)</option>
+          </select></div>
+        <div class="checkline"><input type="checkbox" id="exportgray" checked> <label for="exportgray">grayscale</label></div>
+        <p class="status">preview canvas always renders full-res; these apply to batch export only</p>
+      </div>
+    </details>
+
     <div class="row2">
       <div class="knob"><label>Seed <span class="val" id="v_seed"></span></label>
         <input type="number" id="seed" value="1337"></div>
@@ -1432,52 +1456,144 @@ const SAMPLE_SENTENCES = [
   'ხვალ, 20 ივლისს, წვიმაა მოსალოდნელი.',
 ];
 
+/* external corpus: corpus/words.txt + corpus/sentences.txt (one item per line) replace
+   the embedded mini-corpus when the app is served over HTTP (localhost or GitHub Pages).
+   Keeping the corpus out of the HTML means it can grow to book scale without slowing the
+   page load — and a large unique-sentence pool is what prevents a decoder from memorizing
+   text instead of learning to read (corpus size must exceed image count). */
+(async function loadCorpus() {
+  const load = async (path, target, min) => {
+    try {
+      const r = await fetch(path);
+      if (!r.ok) return 0;
+      const lines = (await r.text()).split('\n').map(s => s.trim()).filter(Boolean);
+      if (lines.length >= min) { target.length = 0; target.push(...lines); return lines.length; }
+    } catch (e) {}
+    return 0;
+  };
+  const nw = await load('corpus/words.txt', SAMPLE_WORDS, 100);
+  const ns = await load('corpus/sentences.txt', SAMPLE_SENTENCES, 50);
+  if (nw || ns) statusEl.textContent =
+    `external corpus loaded: ${nw || 'embedded'} words, ${ns || 'embedded'} sentences`;
+})();
+
+// deterministic text-disjoint split: identical text always lands in the same split,
+// so a sentence can never leak between train and val (the classic leakage bug)
+function textSplit(text) {
+  let h = 5381;
+  for (const c of text) h = ((h * 33) ^ c.codePointAt(0)) >>> 0;
+  return h % 20 === 0 ? 'val' : 'train';   // ~5% val
+}
+
+function sampleBatchText(base) {
+  const drawn = base.handmode ? HAND.drawnWords() : [];
+  const pool = SAMPLE_WORDS.concat(drawn, drawn, drawn);
+  // 40% full sentences (punctuation + numerals), 60% random 2–5 word lines
+  if (Math.random() < 0.4) {
+    return SAMPLE_SENTENCES[Math.floor(Math.random() * SAMPLE_SENTENCES.length)];
+  }
+  const nw = 2 + Math.floor(Math.random() * 4);
+  const words = [];
+  for (let w = 0; w < nw; w++) words.push(pool[Math.floor(Math.random() * pool.length)]);
+  // occasionally append punctuation the way real lines end
+  return words.join(' ') + (Math.random() < 0.3 ? ['.', '!', '?', ','][Math.floor(Math.random() * 4)] : '');
+}
+
+function exportOpts() {
+  const mime = document.getElementById('exportformat').value;
+  return {
+    mime,
+    ext: { 'image/webp': 'webp', 'image/jpeg': 'jpg', 'image/png': 'png' }[mime],
+    q: parseFloat(document.getElementById('exportq').value),
+    height: parseInt(document.getElementById('exportheight').value),
+    gray: document.getElementById('exportgray').checked,
+  };
+}
+
+// downscale to training height + grayscale: full-res RGBA PNGs are ~5x wasted bytes
+// when the training loader immediately resizes to 48–64px anyway
+function exportTransform(src, opts) {
+  if (!opts.height && !opts.gray) return src;
+  const th = opts.height > 0 ? opts.height : src.height;
+  const tw = Math.max(1, Math.round(src.width * th / src.height));
+  const t = document.createElement('canvas');
+  t.width = tw; t.height = th;
+  const c = t.getContext('2d');
+  if (opts.gray) c.filter = 'grayscale(100%)';
+  c.imageSmoothingQuality = 'high';
+  c.drawImage(src, 0, 0, tw, th);
+  return t;
+}
+
+async function generateSample(base, off, opts) {
+  const p = { ...base };
+  p.seed = Math.floor(Math.random() * 1e9);
+  p.text = sampleBatchText(base);
+  renderLine(p, off);
+  const out = exportTransform(off, opts);
+  const blob = await new Promise(res => out.toBlob(res, opts.mime, opts.q));
+  return {
+    blob,
+    meta: {
+      text: p.text, split: textSplit(p.text), seed: p.seed,
+      source: p._source || 'font', writer: p._writer || null, font: p._usedFont,
+    },
+  };
+}
+
+document.getElementById('exportq').addEventListener('input', e => {
+  document.getElementById('v_exportq').textContent = e.target.value;
+});
+
 document.getElementById('batch').addEventListener('click', async () => {
   const n = Math.min(2000, Math.max(1, parseInt(document.getElementById('batchn').value) || 50));
   const zip = new JSZip();
   const imgs = zip.folder('images');
   const base = readParams();
-  const labels = [];
+  const opts = exportOpts();
+  const rows = [];
+  let bytes = 0;
   const prog = document.getElementById('prog');
   prog.style.display = 'block';
   const off = document.createElement('canvas');
-  // word pool: base corpus + drawn words (weighted 3x so word-level hand data appears often)
-  const drawn = base.handmode ? HAND.drawnWords() : [];
-  const pool = SAMPLE_WORDS.concat(drawn, drawn, drawn);
   for (let i = 0; i < n; i++) {
-    const p = { ...base };
-    p.seed = Math.floor(Math.random() * 1e9);
-    // 40% full sentences (punctuation + numerals), 60% random 2–5 word lines
-    if (Math.random() < 0.4) {
-      p.text = SAMPLE_SENTENCES[Math.floor(Math.random() * SAMPLE_SENTENCES.length)];
-    } else {
-      const nw = 2 + Math.floor(Math.random() * 4);
-      const words = [];
-      for (let w = 0; w < nw; w++) words.push(pool[Math.floor(Math.random() * pool.length)]);
-      // occasionally append punctuation the way real lines end
-      p.text = words.join(' ') + (Math.random() < 0.3 ? ['.', '!', '?', ','][Math.floor(Math.random() * 4)] : '');
-    }
-    renderLine(p, off);
-    const blob = await new Promise(res => off.toBlob(res, 'image/png'));
-    const fname = `${String(i).padStart(5, '0')}.png`;
-    imgs.file(fname, blob);
-    labels.push(JSON.stringify({
-      file: 'images/' + fname, text: p.text, seed: p.seed,
-      source: p._source || 'font', writer: p._writer || null, font: p._usedFont,
-    }));
+    const s = await generateSample(base, off, opts);
+    const fname = `${String(i).padStart(5, '0')}.${opts.ext}`;
+    imgs.file(fname, s.blob);
+    bytes += s.blob.size;
+    // HF imagefolder convention: metadata.jsonl with a file_name column
+    rows.push(JSON.stringify({ file_name: 'images/' + fname, ...s.meta }));
     prog.value = (i + 1) / n;
     if (i % 5 === 0) await new Promise(r => setTimeout(r, 0)); // keep UI alive
   }
-  zip.file('labels.jsonl', labels.join('\n'));
-  zip.file('params.json', JSON.stringify(base, null, 2));
+  zip.file('metadata.jsonl', rows.join('\n'));
+  zip.file('params.json', JSON.stringify({ ...base, export: opts }, null, 2));
   const blob = await zip.generateAsync({ type: 'blob' });
   const a = document.createElement('a');
   a.download = `geoscribe_dataset_${n}.zip`;
   a.href = URL.createObjectURL(blob);
   a.click();
   prog.style.display = 'none';
-  statusEl.textContent = `dataset exported: ${n} samples + labels.jsonl`;
+  const nVal = rows.filter(r => r.includes('"split":"val"')).length;
+  statusEl.textContent = `exported ${n} samples · avg ${(bytes / n / 1024).toFixed(1)} KB/image · `
+    + `${n - nVal} train / ${nVal} val (text-disjoint) · metadata.jsonl (HF imagefolder)`;
 });
+
+/* headless hook: tools/generate.mjs drives this via Puppeteer for bulk local generation */
+window.GEOSCRIBE = {
+  ready: () => document.fonts.status === 'loaded',
+  async renderSample(overrides) {
+    const base = { ...readParams(), ...(overrides || {}) };
+    const off = document.createElement('canvas');
+    const s = await generateSample(base, off, exportOpts());
+    const b64 = await new Promise(res => {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result.split(',')[1]);
+      fr.readAsDataURL(s.blob);
+    });
+    return { b64, ext: exportOpts().ext, meta: s.meta };
+  },
+};
 
 /* initial render once all fonts (local + Google) are loaded */
 statusEl.textContent = 'loading fonts…';

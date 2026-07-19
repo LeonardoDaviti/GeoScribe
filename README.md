@@ -27,16 +27,44 @@ Randomness is fully **seeded** (mulberry32), so every sample is reproducible.
 
 ## Dataset export
 
-The **Dataset .zip** button generates N samples (random Georgian word sequences, random
-seeds, current knob settings) and downloads:
+The **Dataset .zip** button generates N samples (sentences + random word lines, random
+seeds, current knob settings) and downloads an HF-imagefolder-style archive:
 
 ```
-images/00000.png …
-labels.jsonl        # {"file": "images/00000.png", "text": "...", "seed": ...}
-params.json         # the generator configuration used
+images/00000.webp …
+metadata.jsonl      # {"file_name": "images/00000.webp", "text", "split", "seed", "source", "writer", "font"}
+params.json         # generator + export configuration used
 ```
 
-Ready to feed into HTR training or upload to Hugging Face.
+**Export options** (training-optimized): WebP/JPEG/PNG with quality control, downscale
+to final training height (48–64 px — full-res RGBA PNGs are ~5× wasted bytes when the
+loader resizes anyway), and grayscale. WebP q0.85 @ 64 px ≈ 10–25 KB/image, so
+50k samples ≈ 0.7–1 GB instead of ~15 GB of PNGs.
+
+**Leakage-proof splits**: every sample gets a `split` field computed as a hash of its
+*text* — identical text always lands in the same split, so no sentence can appear in
+both train and val. (Text-overlapping splits let a decoder memorize the corpus instead
+of learning to read; with a small corpus this dominates the loss descent.)
+
+## External corpus & local bulk generation
+
+`corpus/words.txt` and `corpus/sentences.txt` (one item per line) replace the embedded
+mini-corpus at runtime — served both by GitHub Pages and any local static server, so
+the corpus can grow to book scale without touching or bloating the HTML.
+Corpus size should exceed dataset image count to prevent text memorization.
+
+For datasets beyond the browser-zip range (100k+ samples), the headless driver reuses
+the exact same page:
+
+```
+python3 -m http.server        # local dev: same app at localhost:8000
+npm install puppeteer         # one-time
+node tools/generate.mjs --n 50000 --out dataset --set handprob=0.5
+```
+
+It writes `images/` + `metadata.jsonl` straight to disk (no zip memory limit) via the
+in-page `window.GEOSCRIBE.renderSample` hook — the same code path as the batch button.
+No framework, no build step: the "local app" and the public site are the same file.
 
 ## Drawing mode (Stage B: your hand as a generative model)
 
