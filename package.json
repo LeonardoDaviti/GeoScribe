@@ -1,0 +1,24 @@
+{
+  "name": "geoscribe",
+  "version": "1.0.0",
+  "description": "A single-page, zero-dependency-server synthetic handwriting generator for the Georgian (Mkhedruli) script. Everything runs client-side in Canvas 2D, so it can be hosted on **GitHub Pages** as-is.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LeonardoDaviti/GeoScribe.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/LeonardoDaviti/GeoScribe/issues"
+  },
+  "homepage": "https://github.com/LeonardoDaviti/GeoScribe#readme",
+  "dependencies": {
+    "puppeteer": "^25.3.0"
+  }
+}

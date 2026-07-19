@@ -301,7 +301,7 @@
       <div class="knob"><label>Seed <span class="val" id="v_seed"></span></label>
         <input type="number" id="seed" value="1337"></div>
       <div class="knob"><label>Batch size</label>
-        <input type="number" id="batchn" value="50" min="1" max="2000"></div>
+        <input type="number" id="batchn" value="50" min="1" max="20000"></div>
     </div>
 
     <button class="btn" id="regen">🎲 New seed &amp; render</button>
@@ -1546,7 +1546,9 @@ document.getElementById('exportq').addEventListener('input', e => {
 });
 
 document.getElementById('batch').addEventListener('click', async () => {
-  const n = Math.min(2000, Math.max(1, parseInt(document.getElementById('batchn').value) || 50));
+  // browser cap: the whole zip is built in memory (~20k × 20KB ≈ 400MB is the practical
+  // ceiling); for larger runs use tools/generate.mjs which streams to disk
+  const n = Math.min(20000, Math.max(1, parseInt(document.getElementById('batchn').value) || 50));
   const zip = new JSZip();
   const imgs = zip.folder('images');
   const base = readParams();
