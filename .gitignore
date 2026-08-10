@@ -2,3 +2,4 @@ node_modules/
 dataset/
 v0.1/
 geoscribe_writers*.json
+*.zip
