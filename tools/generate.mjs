@@ -61,10 +61,22 @@ const page = await browser.newPage();
 await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle0' });
 await page.waitForFunction(() => window.GEOSCRIBE && window.GEOSCRIBE.ready(), { timeout: 30000 });
 
-const metaStream = fs.createWriteStream(path.join(OUT, 'metadata.jsonl'));
+// --resume: continue an interrupted run — count finished images, append to metadata.
+// (Without it a restart would truncate metadata.jsonl and orphan every existing image.)
+const resume = args.includes('--resume');
+let start = 0;
+if (resume) {
+  const metaPath = path.join(OUT, 'metadata.jsonl');
+  // trust metadata line count (an image may exist whose metadata row was never flushed;
+  // it just gets regenerated under the same name)
+  start = fs.existsSync(metaPath)
+    ? fs.readFileSync(metaPath, 'utf8').split('\n').filter(Boolean).length : 0;
+  console.log(`resuming at ${start}/${N}`);
+}
+const metaStream = fs.createWriteStream(path.join(OUT, 'metadata.jsonl'), { flags: resume ? 'a' : 'w' });
 let bytes = 0;
 const t0 = Date.now();
-for (let i = 0; i < N; i++) {
+for (let i = start; i < N; i++) {
   const s = await page.evaluate(o => window.GEOSCRIBE.renderSample(o), overrides);
   const fname = `${String(i).padStart(6, '0')}.${s.ext}`;
   const buf = Buffer.from(s.b64, 'base64');
@@ -72,8 +84,9 @@ for (let i = 0; i < N; i++) {
   bytes += buf.length;
   metaStream.write(JSON.stringify({ file_name: 'images/' + fname, ...s.meta }) + '\n');
   if ((i + 1) % 100 === 0) {
-    const rate = (i + 1) / ((Date.now() - t0) / 1000);
-    console.log(`${i + 1}/${N} · ${(bytes / (i + 1) / 1024).toFixed(1)} KB/img · ${rate.toFixed(1)} img/s · ETA ${((N - i - 1) / rate / 60).toFixed(1)} min`);
+    const done = i + 1 - start;
+    const rate = done / ((Date.now() - t0) / 1000);
+    console.log(`${i + 1}/${N} · ${(bytes / done / 1024).toFixed(1)} KB/img · ${rate.toFixed(1)} img/s · ETA ${((N - i - 1) / rate / 60).toFixed(1)} min`);
   }
 }
 metaStream.end();
