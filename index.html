@@ -41,8 +41,11 @@
     .stage { padding: 16px 12px; }
     header { padding: 18px 16px 12px; }
     .controls { border-right: none; border-bottom: 1px solid var(--border); }
-    /* draw board scales to viewport; pointer coords already rescale via getBoundingClientRect */
+    /* draw board scales to viewport; pointer coords already rescale via getBoundingClientRect.
+       Sentence mode opts out (.wide): full logical size + pan buttons, so strokes aren't
+       squeezed into a third of their intended size on phones. */
     #drawcanvas { width: 100%; height: auto; }
+    #drawcanvas.wide { width: 960px; height: 300px; max-width: none; }
     #drawboard { padding: 12px; }
     .btn { padding: 12px 14px; }   /* bigger touch targets */
     .chip { padding: 9px 15px; }
@@ -340,7 +343,14 @@
       <div id="lettergrid" style="display:flex; flex-wrap:wrap; gap:5px; margin-bottom:14px;"></div>
       <div style="display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start;">
         <div>
-          <canvas id="drawcanvas" width="340" height="340" style="background:#fdfcf8; border-radius:10px; cursor:crosshair; touch-action:none;"></canvas>
+          <div id="canvasscroll" style="overflow-x:auto; max-width:100%; border-radius:10px;">
+            <canvas id="drawcanvas" width="340" height="340" style="background:#fdfcf8; border-radius:10px; cursor:crosshair; touch-action:none; display:block;"></canvas>
+          </div>
+          <div id="panrow" style="display:none; gap:8px; margin-top:8px; align-items:center;">
+            <button class="btn secondary" id="panl" style="width:auto; padding:8px 18px">◀ pan</button>
+            <button class="btn secondary" id="panr" style="width:auto; padding:8px 18px">pan ▶</button>
+            <span class="status">tip: rotate your phone for more width</span>
+          </div>
           <div style="display:flex; gap:8px; margin-top:10px;">
             <button class="btn" id="savestroke" style="width:auto; flex:1">💾 Save sample</button>
             <button class="btn secondary" id="undostroke" style="width:auto">↩ undo</button>
@@ -1177,6 +1187,10 @@ function drawGuides() {
   }
 }
 document.getElementById('ghost').addEventListener('change', () => drawGuides());
+document.getElementById('panl').addEventListener('click', () =>
+  document.getElementById('canvasscroll').scrollBy({ left: -240, behavior: 'smooth' }));
+document.getElementById('panr').addEventListener('click', () =>
+  document.getElementById('canvasscroll').scrollBy({ left: 240, behavior: 'smooth' }));
 
 /* ---- sample gallery: preview + delete individual drawings of the current key ---- */
 function renderSampleThumb(sample, cv) {
@@ -1264,6 +1278,11 @@ function setDrawMode(m) {
   document.getElementById('wordrow').style.display = m === 'letters' ? 'none' : 'flex';
   dc.width = { letters: 340, words: 680, sentences: 960 }[m];
   dc.height = m === 'sentences' ? 300 : 340;
+  // phones: sentence canvas keeps full logical size inside a scroll container with pan
+  // buttons (touch-action:none blocks touch-scrolling the container while drawing)
+  dc.classList.toggle('wide', m === 'sentences');
+  const narrow = window.matchMedia('(max-width: 900px)').matches;
+  document.getElementById('panrow').style.display = (m === 'sentences' && narrow) ? 'flex' : 'none';
   const wr = HAND.ensure(HAND.current);
   if (m === 'letters') curKey = MKHEDRULI[0];
   else {
