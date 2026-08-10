@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Georgian:wght@100..900&family=Noto+Serif+Georgian:wght@100..900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="js/degrade.js"></script>
 <style>
   :root {
     --bg: #0f1117;
@@ -279,6 +280,11 @@
     <details class="group">
       <summary>Export options</summary>
       <div class="body">
+        <div class="knob"><label>Layout</label>
+          <select id="exportlayout">
+            <option value="lines" selected>lines — one text line per image</option>
+            <option value="pages">pages — full sheet + box ground truth</option>
+          </select></div>
         <div class="knob"><label>Format</label>
           <select id="exportformat">
             <option value="image/webp" selected>WebP q0.85 (~10–25 KB/image)</option>
@@ -296,7 +302,17 @@
             <option value="0">full render (no downscale)</option>
           </select></div>
         <div class="checkline"><input type="checkbox" id="exportgray" checked> <label for="exportgray">grayscale</label></div>
-        <p class="status">preview canvas always renders full-res; these apply to batch export only</p>
+        <div class="knob"><label>Degradation</label>
+          <select id="degradepreset">
+            <option value="clean" selected>clean — canvas render as-is</option>
+            <option value="scan">scan — light noise, faint bands, jpeg</option>
+            <option value="phone">phone — perspective, uneven light, blur, noise</option>
+            <option value="phone-hard">phone-hard — dim room, shaky hand, worn pen</option>
+            <option value="mix">mix — random preset per sample (25% each)</option>
+          </select></div>
+        <p class="status">preview canvas always renders full-res; these apply to batch export only.
+          pages ignore the height downscale (boxes are in full-render pixels) and carry
+          line/word boxes in metadata.jsonl</p>
       </div>
     </details>
 
@@ -800,6 +816,42 @@ const INKSTYLES = {
   pencil:    { bleed: 0.5,  inkjit: 0.9, alpha: 0.8,  grain: 0.45 },
 };
 
+/* ---------------- Ground-truth box helpers ----------------
+   inkBounds scans the alpha channel of a glyph canvas so a box hugs the real ink
+   instead of the (generously padded) glyph canvas. */
+function inkBounds(imgData, w, h) {
+  const d = imgData.data;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      if (d[(row + x) * 4 + 3] > 8) {
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+  }
+  return x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+function inflateClamp(b, m, W, H) {
+  const x = Math.max(0, b.x - m), y = Math.max(0, b.y - m);
+  return { x, y, w: Math.min(W, b.x + b.w + m) - x, h: Math.min(H, b.y + b.h + m) - y };
+}
+function mergeBox(a, b) {
+  if (!a) return { ...b };
+  const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+  return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
+}
+const intBox = b => [Math.round(b.x), Math.round(b.y), Math.max(1, Math.round(b.w)), Math.max(1, Math.round(b.h))];
+
+/* Renders one line into targetCanvas and RETURNS its geometry:
+     { units:[{text,x,y,w,h}], words:[{text,x,y,w,h}], box, baseline, width, height }
+   Boxes are axis-aligned, in output-canvas pixels.
+   CAVEAT (SynthTIGER-style dual coordinates): they are measured in PRE-elastic
+   placement space — step 4 displaces pixels by up to p.elasticamp px afterwards — so
+   every box is inflated by an p.elasticamp margin and clamped to the canvas. */
 function renderLine(p, targetCanvas) {
   rng = mulberry32(p.seed);
   const st = INKSTYLES[p.inkstyle] || INKSTYLES.ballpoint;
@@ -809,9 +861,11 @@ function renderLine(p, targetCanvas) {
 
   // resolve sources: font mode as before; hand source decided PER SAMPLE (a real
   // scanned line is one writer with one pen — mixture lives across the batch)
+  // _forceWriter/_forceHand let renderPage pin one hand+pen across every line of a page
   const sampleFont = pickFontDef(p);
-  const writer = (p.handmode && HAND.coveredWriters().length) ? HAND.pickWriter() : null;
-  const useHand = writer !== null && rand() < p.handprob;
+  const writer = ('_forceWriter' in p) ? p._forceWriter
+    : ((p.handmode && HAND.coveredWriters().length) ? HAND.pickWriter() : null);
+  const useHand = writer !== null && (('_forceHand' in p) ? p._forceHand : rand() < p.handprob);
   const wd = useHand ? HAND.writers[writer] : null;
   p._source = useHand ? 'hand' : 'font';
   p._writer = useHand ? writer : null;
@@ -888,11 +942,13 @@ function renderLine(p, targetCanvas) {
     if (handInst) HAND.draw(g, handInst, glyphPad, gh / 2 + fs * 0.35, p, fs);
     else g.fillText(drawCh, glyphPad, gh / 2 + fs * 0.35);
     // per-glyph stroke width jitter
+    let gid = g.getImageData(0, 0, gw, gh);
     if (rand() < p.strokejit) {
       const op = rand() < 0.5 ? -1 : 1;
-      const id = g.getImageData(0, 0, gw, gh);
-      g.putImageData(morphAlpha(id, gw, gh, op), 0, 0);
+      gid = morphAlpha(gid, gw, gh, op);
+      g.putImageData(gid, 0, 0);
     }
+    const inkbb = inkBounds(gid, gw, gh);
     // Stage B+: entry/exit anchors (in glyph-canvas coords, through the same affine)
     // for cursive bridging between adjacent hand letters
     let join = null;
@@ -913,7 +969,7 @@ function renderLine(p, targetCanvas) {
         exitRef: aff(last[Math.max(0, last.length - 5)]),
       };
     }
-    glyphs.push({ canvas: gc, adv: advW, pad: glyphPad, join });
+    glyphs.push({ canvas: gc, adv: advW, pad: glyphPad, join, ink: inkbb, text: u.word || u.ch });
   }
 
   // 2. Compose along drifting baseline with kerning jitter / overlaps
@@ -934,6 +990,27 @@ function renderLine(p, targetCanvas) {
     x += Math.max(fs * 0.1, adv);
   }
   const W = Math.ceil(x + pad), H = Math.ceil(fs * 2.2 + pad * 2);
+
+  // 2b. Ground truth: per-unit boxes, merged per word (units between spaces), merged per line
+  const unitBoxes = [], words = [];
+  let curWord = null;
+  for (const pl of placements) {
+    const b = pl.gl.ink
+      ? { x: pl.x + pl.gl.ink.x, y: pl.y + pl.gl.ink.y, w: pl.gl.ink.w, h: pl.gl.ink.h }
+      : { x: pl.x + pl.gl.pad, y: pl.y + pl.gl.pad, w: pl.gl.adv, h: fs * 1.8 };
+    const box = inflateClamp(b, p.elasticamp, W, H);
+    unitBoxes.push({ text: pl.gl.text, ...box });
+    if (!curWord || pl.brk) { curWord = { text: '', box: null }; words.push(curWord); }
+    curWord.text += pl.gl.text;
+    curWord.box = mergeBox(curWord.box, box);
+  }
+  const geom = {
+    units: unitBoxes,
+    words: words.map(w => ({ text: w.text, ...w.box })),
+    box: words.reduce((a, w) => mergeBox(a, w.box), null) || { x: 0, y: 0, w: W, h: H },
+    baseline: pad + fs * 1.1,   // nominal baseline (before sine/random-walk drift)
+    width: W, height: H,
+  };
 
   // ink layer (black on transparent)
   const ink = document.createElement('canvas');
@@ -988,24 +1065,28 @@ function renderLine(p, targetCanvas) {
   ic.putImageData(id, 0, 0);
 
   // 5. Composite: paper + ruled lines + ink (tinted, with bleed)
+  // _nopaper: page composition draws its own paper/ruling once, so lines come out as
+  // ink on transparent and composite without opaque per-line rectangles
   targetCanvas.width = W; targetCanvas.height = H;
   const ctx = targetCanvas.getContext('2d');
-  ctx.fillStyle = p.papertint;
-  ctx.fillRect(0, 0, W, H);
-  // paper noise
-  if (p.papernoise > 0) {
-    const pd = ctx.getImageData(0, 0, W, H);
-    for (let i = 0; i < pd.data.length; i += 4) {
-      const n = (rand() - 0.5) * 2 * p.papernoise * 255;
-      pd.data[i] += n; pd.data[i+1] += n; pd.data[i+2] += n;
+  if (!p._nopaper) {
+    ctx.fillStyle = p.papertint;
+    ctx.fillRect(0, 0, W, H);
+    // paper noise
+    if (p.papernoise > 0) {
+      const pd = ctx.getImageData(0, 0, W, H);
+      for (let i = 0; i < pd.data.length; i += 4) {
+        const n = (rand() - 0.5) * 2 * p.papernoise * 255;
+        pd.data[i] += n; pd.data[i+1] += n; pd.data[i+2] += n;
+      }
+      ctx.putImageData(pd, 0, 0);
     }
-    ctx.putImageData(pd, 0, 0);
-  }
-  if (p.ruled) {
-    ctx.strokeStyle = 'rgba(90,130,200,0.35)';
-    ctx.lineWidth = 1;
-    const baseY = pad + fs * 1.1;
-    ctx.beginPath(); ctx.moveTo(0, baseY + fs * 0.15); ctx.lineTo(W, baseY + fs * 0.15); ctx.stroke();
+    if (p.ruled) {
+      ctx.strokeStyle = 'rgba(90,130,200,0.35)';
+      ctx.lineWidth = 1;
+      const baseY = pad + fs * 1.1;
+      ctx.beginPath(); ctx.moveTo(0, baseY + fs * 0.15); ctx.lineTo(W, baseY + fs * 0.15); ctx.stroke();
+    }
   }
   // tint ink
   const [ir, ig2, ib] = hexToRgb(p.inkcolor);
@@ -1026,6 +1107,118 @@ function renderLine(p, targetCanvas) {
     ctx.restore();
   }
   ctx.drawImage(inkTinted, 0, 0);
+  return geom;
+}
+
+/* ---------------- Page composition ----------------
+   A portrait sheet (A5/A4 aspect) of 6–14 lines, each produced by renderLine on its own
+   transparent canvas and composited at a jittered baseline, so page ground truth is just
+   the line geometry translated by the line offset. Returns
+     { lines:[{text, box, words:[{text, box}]}], text, width, height }
+   with the same pre-elastic + margin box caveat as renderLine. */
+const PAGE_W = 1240;
+function renderPage(p, targetCanvas) {
+  rng = mulberry32(p.seed);
+  const W = PAGE_W, H = Math.round(W * 1.414);   // ISO 216 portrait (A5 at ~300 dpi ≈ A4 ratio)
+  const nLines = 6 + Math.floor(rand() * 9);     // 6–14
+  const mL = Math.round(W * uniform(0.06, 0.13));
+  const mR = Math.round(W * uniform(0.05, 0.11));
+  const mT = Math.round(H * uniform(0.06, 0.12));
+  const mB = Math.round(H * uniform(0.06, 0.14));
+  const colW = W - mL - mR;
+  const gap = (H - mT - mB) / nLines;
+  // shrink type when many lines share the sheet, so ascenders/descenders don't collide
+  const fs = Math.max(18, Math.min(p.fontsize, gap / 1.55));
+  const shortLast = rand() < 0.5;
+
+  // one hand and one pen for the whole sheet
+  const writer = (p.handmode && HAND.coveredWriters().length) ? HAND.pickWriter() : null;
+  const useHand = writer !== null && rand() < p.handprob;
+  const pageFont = p.fontmode === 'glyph' ? null : pickFontDef(p);
+
+  const baselines = [];
+  for (let i = 0; i < nLines; i++) baselines.push(mT + gap * (i + 0.75) + randn() * gap * 0.04);
+
+  // greedy fill of the column; measureText on the page font is only an estimate, so the
+  // rendered width is re-checked below and trailing words dropped if it overflows
+  const meas = document.createElement('canvas').getContext('2d');
+  meas.font = `${p.weight} ${fs}px ${(pageFont || FONT_BY_ID['noto-sans']).family}`;
+  const estW = s => meas.measureText(s).width;
+  function lineText(target) {
+    let t = sampleBatchText(p);
+    while (estW(t) > target && t.includes(' ')) t = t.slice(0, t.lastIndexOf(' '));
+    while (estW(t) < target * 0.82) {
+      const add = t + ' ' + sampleBatchText(p);
+      if (estW(add) > target) break;
+      t = add;
+    }
+    return t;
+  }
+
+  const lineCanvas = document.createElement('canvas');
+  const lines = [];
+  for (let i = 0; i < nLines; i++) {
+    const target = (shortLast && i === nLines - 1) ? colW * uniform(0.3, 0.7) : colW;
+    const lp = {
+      ...p, fontsize: fs, seed: (p.seed + i * 7919 + 13) | 0, text: lineText(target),
+      _nopaper: true, _forceWriter: writer, _forceHand: useHand,
+      ...(pageFont ? { fontmode: 'fixed', font: pageFont.id } : {}),
+    };
+    let geom = renderLine(lp, lineCanvas);
+    for (let attempt = 0; attempt < 2 && geom.box.w > colW && lp.text.includes(' '); attempt++) {
+      lp.text = lp.text.slice(0, lp.text.lastIndexOf(' '));
+      geom = renderLine(lp, lineCanvas);
+    }
+    const dx = mL - geom.box.x + randn() * fs * 0.12;
+    const dy = baselines[i] - geom.baseline;
+    // lineCanvas is reused by the next iteration, so keep a copy of this line's pixels
+    const bitmap = document.createElement('canvas');
+    bitmap.width = lineCanvas.width; bitmap.height = lineCanvas.height;
+    bitmap.getContext('2d').drawImage(lineCanvas, 0, 0);
+    lines.push({ text: lp.text, geom, dx, dy, bitmap });
+  }
+
+  // paper is drawn once for the whole sheet (line canvases are ink-on-transparent)
+  rng = mulberry32((p.seed ^ 0x5f3a7c1) | 0);
+  targetCanvas.width = W; targetCanvas.height = H;
+  const ctx = targetCanvas.getContext('2d');
+  ctx.fillStyle = p.papertint;
+  ctx.fillRect(0, 0, W, H);
+  if (p.papernoise > 0) {
+    const pd = ctx.getImageData(0, 0, W, H);
+    for (let i = 0; i < pd.data.length; i += 4) {
+      const n = (rand() - 0.5) * 2 * p.papernoise * 255;
+      pd.data[i] += n; pd.data[i+1] += n; pd.data[i+2] += n;
+    }
+    ctx.putImageData(pd, 0, 0);
+  }
+  if (p.ruled) {
+    ctx.strokeStyle = 'rgba(90,130,200,0.35)';
+    ctx.lineWidth = 1;
+    for (const b of baselines) {
+      ctx.beginPath(); ctx.moveTo(0, b + fs * 0.15); ctx.lineTo(W, b + fs * 0.15); ctx.stroke();
+    }
+  }
+
+  const offset = (b, dx, dy) => {
+    const c = inflateClamp({ x: b.x + dx, y: b.y + dy, w: b.w, h: b.h }, 0, W, H);
+    return { x: c.x, y: c.y, w: Math.max(1, c.w), h: Math.max(1, c.h) };
+  };
+  const out = [];
+  for (const ln of lines) {
+    ctx.drawImage(ln.bitmap, ln.dx, ln.dy);
+    out.push({
+      text: ln.text,
+      box: offset(ln.geom.box, ln.dx, ln.dy),
+      words: ln.geom.words.map(w => ({ text: w.text, box: offset(w, ln.dx, ln.dy) })),
+      units: ln.geom.units.map(u => ({ text: u.text, box: offset(u, ln.dx, ln.dy) })),
+    });
+  }
+
+  p._source = useHand ? 'hand' : 'font';
+  p._writer = useHand ? writer : null;
+  p._usedFont = pageFont ? pageFont.id : 'mixed';
+  return { lines: out, text: out.map(l => l.text).join('\n'), width: W, height: H };
 }
 
 /* ---------------- UI wiring ---------------- */
@@ -1052,8 +1245,10 @@ function render() {
   updateLabels();
   const t0 = performance.now();
   const p = readParams();
-  renderLine(p, canvas);
+  const pages = document.getElementById('exportlayout').value === 'pages';
+  const page = pages ? renderPage(p, canvas) : (renderLine(p, canvas), null);
   statusEl.textContent = `rendered ${canvas.width}×${canvas.height} in ${(performance.now() - t0).toFixed(0)} ms · seed ${p.seed} · `
+    + (page ? `page of ${page.lines.length} lines · ` : '')
     + (p._source === 'hand' ? `writer ${p._writer} (+font ${p._usedFont})` : `font ${p._usedFont}`);
 }
 function scheduleRender() {
@@ -1064,6 +1259,7 @@ for (const id of [...SLIDERS, 'font', 'fontmode', 'inkcolor', 'inkstyle', 'paper
   document.getElementById(id).addEventListener('input', scheduleRender);
 }
 document.getElementById('ruled').addEventListener('change', scheduleRender);
+document.getElementById('exportlayout').addEventListener('change', scheduleRender);
 document.getElementById('text').addEventListener('input', scheduleRender);
 
 document.getElementById('regen').addEventListener('click', () => {
@@ -1526,7 +1722,25 @@ function exportOpts() {
     q: parseFloat(document.getElementById('exportq').value),
     height: parseInt(document.getElementById('exportheight').value),
     gray: document.getElementById('exportgray').checked,
+    layout: document.getElementById('exportlayout').value,
+    degrade: document.getElementById('degradepreset').value,
   };
+}
+
+// Degradation runs on its own rand stream derived from p.seed, so tweaking the
+// render code never shifts the degradation draws (and vice versa).
+async function applyDegrade(cv, opts, seed) {
+  const name = opts.degrade || 'clean';
+  if (name === 'clean' || !window.DEGRADE) return { canvas: cv, preset: 'clean' };
+  const r = mulberry32((seed ^ 0x9e3779b9) >>> 0);
+  const pool = ['clean', 'scan', 'phone', 'phone-hard'];
+  const preset = name === 'mix' ? pool[Math.floor(r() * pool.length) % pool.length] : name;
+  if (preset === 'clean') return { canvas: cv, preset };
+  // degrade at FULL render resolution, before the training-height downscale: real
+  // phone blur/noise is partially averaged away by resizing, and 1px of blur on a
+  // 64px line would eat the strokes. exportTransform then also re-grays chroma noise.
+  const out = await DEGRADE.apply(cv, DEGRADE.presets[preset], r);
+  return { canvas: out, preset };
 }
 
 // downscale to training height + grayscale: full-res RGBA PNGs are ~5x wasted bytes
@@ -1545,17 +1759,48 @@ function exportTransform(src, opts) {
 }
 
 async function generateSample(base, off, opts) {
+  if (opts.layout === 'pages') return generatePageSample(base, off, opts);
   const p = { ...base };
   p.seed = Math.floor(Math.random() * 1e9);
   p.text = sampleBatchText(base);
   renderLine(p, off);
-  const out = exportTransform(off, opts);
+  const deg = await applyDegrade(off, opts, p.seed);
+  const out = exportTransform(deg.canvas, opts);
   const blob = await new Promise(res => out.toBlob(res, opts.mime, opts.q));
   return {
     blob,
     meta: {
       text: p.text, split: textSplit(p.text), seed: p.seed,
       source: p._source || 'font', writer: p._writer || null, font: p._usedFont,
+      degrade: deg.preset,
+    },
+  };
+}
+
+// page samples keep full render resolution: the box ground truth is in those pixels, and
+// a 64px-tall sheet would be unreadable anyway (grayscale/format still apply)
+async function generatePageSample(base, off, opts) {
+  const p = { ...base };
+  p.seed = Math.floor(Math.random() * 1e9);
+  const page = renderPage(p, off);
+  const deg = await applyDegrade(off, opts, p.seed);
+  const out = exportTransform(deg.canvas, { ...opts, height: 0 });
+  const blob = await new Promise(res => out.toBlob(res, opts.mime, opts.q));
+  return {
+    blob,
+    meta: {
+      text: page.text, split: textSplit(page.text), seed: p.seed,
+      source: p._source || 'font', writer: p._writer || null, font: p._usedFont,
+      degrade: deg.preset,
+      // phone presets warp geometry (homography): boxes then hold for the pre-warp
+      // image only — train detectors on clean/scan pages, recognizers on any
+      boxes_exact: !(deg.preset === 'phone' || deg.preset === 'phone-hard'),
+      width: page.width, height: page.height,
+      lines: page.lines.map(l => ({
+        text: l.text, box: intBox(l.box),
+        words: l.words.map(w => ({ text: w.text, box: intBox(w.box) })),
+      })),
+      words: page.lines.flatMap(l => l.words.map(w => ({ text: w.text, box: intBox(w.box) }))),
     },
   };
 }
@@ -1604,15 +1849,19 @@ document.getElementById('batch').addEventListener('click', async () => {
 window.GEOSCRIBE = {
   ready: () => document.fonts.status === 'loaded',
   async renderSample(overrides) {
-    const base = { ...readParams(), ...(overrides || {}) };
+    const o = overrides || {};
+    const base = { ...readParams(), ...o };
+    // `layout`/`degrade` are export options, not render params: accept as overrides too
+    const opts = { ...exportOpts(),
+      ...(o.layout ? { layout: o.layout } : {}), ...(o.degrade ? { degrade: o.degrade } : {}) };
     const off = document.createElement('canvas');
-    const s = await generateSample(base, off, exportOpts());
+    const s = await generateSample(base, off, opts);
     const b64 = await new Promise(res => {
       const fr = new FileReader();
       fr.onload = () => res(fr.result.split(',')[1]);
       fr.readAsDataURL(s.blob);
     });
-    return { b64, ext: exportOpts().ext, meta: s.meta };
+    return { b64, ext: opts.ext, meta: s.meta };
   },
 };
 
