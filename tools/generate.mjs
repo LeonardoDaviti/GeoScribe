@@ -38,8 +38,20 @@ const overrides = {};
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--set') {
     const [k, v] = args[i + 1].split('=');
-    overrides[k] = isNaN(+v) ? v : +v;
+    overrides[k] = v === 'true' ? true : v === 'false' ? false : isNaN(+v) ? v : +v;
   }
+}
+
+// --writers profile.json: inject drawn hand profiles (drawing-board export) into the
+// headless page's localStorage so generation can use real hands, and enable handmode
+const writersPath = flag('writers', null);
+let writersPayload = null;
+if (writersPath) {
+  const raw = JSON.parse(fs.readFileSync(writersPath, 'utf8'));
+  const writers = raw.writers || raw;
+  writersPayload = JSON.stringify({ writers, active: Object.keys(writers) });
+  if (overrides.handmode === undefined) overrides.handmode = true;
+  console.log(`writers: ${Object.keys(writers).join(', ')} (handmode on, handprob ${overrides.handprob ?? 'slider default 0.6'})`);
 }
 
 // ---- tiny static server for the repo dir ----
@@ -58,6 +70,11 @@ fs.mkdirSync(path.join(OUT, 'images'), { recursive: true });
 
 const browser = await puppeteer.launch();
 const page = await browser.newPage();
+if (writersPayload) {
+  await page.evaluateOnNewDocument(payload => {
+    localStorage.setItem('geoscribe_hand_profiles_v2', payload);
+  }, writersPayload);
+}
 await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle0' });
 await page.waitForFunction(() => window.GEOSCRIBE && window.GEOSCRIBE.ready(), { timeout: 30000 });
 

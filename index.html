@@ -311,6 +311,7 @@
             <option value="photo">photo — page on desk, angle, cast shadow, glare</option>
             <option value="mix">mix — random preset per sample (20% each)</option>
           </select></div>
+        <button class="btn secondary" id="degpreview" style="margin-top:6px">👁 Preview degradation on canvas</button>
         <p class="status">preview canvas always renders full-res; these apply to batch export only.
           pages ignore the height downscale (boxes are in full-render pixels) and carry
           line/word boxes in metadata.jsonl</p>
@@ -1808,6 +1809,20 @@ async function generatePageSample(base, off, opts) {
 
 document.getElementById('exportq').addEventListener('input', e => {
   document.getElementById('v_exportq').textContent = e.target.value;
+});
+
+/* one-shot degradation preview on the main canvas (any knob change re-renders clean) */
+document.getElementById('degpreview').addEventListener('click', async () => {
+  render();  // fresh clean base at current params
+  const p = readParams();
+  const opts = exportOpts();
+  if (opts.degrade === 'clean') {
+    statusEl.textContent = 'degradation preset is "clean" — pick scan/phone/photo/mix first';
+    return;
+  }
+  const deg = await applyDegrade(canvas, opts, p.seed);
+  canvas.getContext('2d').drawImage(deg.canvas, 0, 0);
+  statusEl.textContent = `degradation preview: ${deg.preset} @ seed ${p.seed} — change any knob to go back to clean`;
 });
 
 document.getElementById('batch').addEventListener('click', async () => {
