@@ -186,9 +186,23 @@ function lowink(cv, p, rand) {
   return cv;
 }
 
-/* 2. paper — global tint shift + coarse texture (fibres / cheap notebook stock). */
-function paper(cv, p, rand) {
+/* 2. paper — global tint shift + coarse texture (fibres / cheap notebook stock).
+      When real photographed blank-paper textures are supplied, one is multiply-
+      blended over the page first — closes texture gaps no noise model can. */
+function paper(cv, p, rand, images) {
   const w = cv.width, h = cv.height;
+  if (images && images.paper && images.paper.length) {
+    const img = images.paper[Math.floor(rand() * images.paper.length) % images.paper.length];
+    const iw = img.width || img.naturalWidth, ih = img.height || img.naturalHeight;
+    const sc2 = Math.max(w / iw, h / ih) * uni(rand, 1.0, 1.4);
+    const dx = uni(rand, 0, Math.max(0, iw * sc2 - w)), dy = uni(rand, 0, Math.max(0, ih * sc2 - h));
+    const x2 = cv.getContext('2d');
+    x2.save();
+    x2.globalCompositeOperation = 'multiply';
+    x2.globalAlpha = clamp(p.amount, 0, 1) * 0.55;
+    x2.drawImage(img, -dx, -dy, iw * sc2, ih * sc2);
+    x2.restore();
+  }
   const ctx = cv.getContext('2d', { willReadFrequently: true });
   const id = ctx.getImageData(0, 0, w, h), d = id.data;
   const a = p.amount;
@@ -217,7 +231,7 @@ function paper(cv, p, rand) {
        composited over a textured desk surface with a drop shadow along its edges.
        Unlike `perspective` (which insets to hide wedges), this WANTS the surround
        visible — that's what a real phone photo of a notebook page looks like. */
-function scene(cv, p, rand) {
+function scene(cv, p, rand, images) {
   const w = cv.width, h = cv.height;
   const a = p.amount;
 
@@ -235,26 +249,39 @@ function scene(cv, p, rand) {
   const Hi = H && invert3(H);
   if (!Hi) return cv;
 
-  // desk: dark surface (wood / grey / near-black) with coarse streaky texture
+  // desk: a real photographed surface when available (cover-scaled, random flip),
+  // otherwise a procedural dark surface with coarse streaky texture
   const desk = makeCanvas(w, h);
   const dctx = desk.getContext('2d', { willReadFrequently: true });
-  const kinds = [[92, 62, 38], [70, 70, 74], [34, 32, 30], [120, 104, 84]];
-  const [br, bg2, bb] = kinds[Math.floor(rand() * kinds.length) % kinds.length];
-  dctx.fillStyle = `rgb(${br},${bg2},${bb})`;
-  dctx.fillRect(0, 0, w, h);
-  const tex = noiseField(rand, Math.max(4, Math.round(w / 30)), Math.max(3, Math.round(h / 90)), 1);
-  const did = dctx.getImageData(0, 0, w, h), dd = did.data;
-  for (let y = 0; y < h; y++) {
-    const v = y / (h - 1 || 1);
-    for (let x = 0; x < w; x++) {
-      const o = (y * w + x) * 4;
-      const n = tex(x / (w - 1 || 1), v) * 14 + (rand() - 0.5) * 6;
-      dd[o] = clamp(dd[o] + n, 0, 255);
-      dd[o + 1] = clamp(dd[o + 1] + n, 0, 255);
-      dd[o + 2] = clamp(dd[o + 2] + n, 0, 255);
+  const deskImgs = images && images.desk && images.desk.length ? images.desk : null;
+  if (deskImgs) {
+    const img = deskImgs[Math.floor(rand() * deskImgs.length) % deskImgs.length];
+    const iw = img.width || img.naturalWidth, ih = img.height || img.naturalHeight;
+    const sc2 = Math.max(w / iw, h / ih) * uni(rand, 1.0, 1.3);   // slight over-zoom = crop variety
+    const dx = uni(rand, 0, Math.max(0, iw * sc2 - w)), dy = uni(rand, 0, Math.max(0, ih * sc2 - h));
+    dctx.save();
+    if (rand() < 0.5) { dctx.translate(w, 0); dctx.scale(-1, 1); }
+    dctx.drawImage(img, -dx, -dy, iw * sc2, ih * sc2);
+    dctx.restore();
+  } else {
+    const kinds = [[92, 62, 38], [70, 70, 74], [34, 32, 30], [120, 104, 84]];
+    const [br, bg2, bb] = kinds[Math.floor(rand() * kinds.length) % kinds.length];
+    dctx.fillStyle = `rgb(${br},${bg2},${bb})`;
+    dctx.fillRect(0, 0, w, h);
+    const tex = noiseField(rand, Math.max(4, Math.round(w / 30)), Math.max(3, Math.round(h / 90)), 1);
+    const did = dctx.getImageData(0, 0, w, h), dd = did.data;
+    for (let y = 0; y < h; y++) {
+      const v = y / (h - 1 || 1);
+      for (let x = 0; x < w; x++) {
+        const o = (y * w + x) * 4;
+        const n = tex(x / (w - 1 || 1), v) * 14 + (rand() - 0.5) * 6;
+        dd[o] = clamp(dd[o] + n, 0, 255);
+        dd[o + 1] = clamp(dd[o + 1] + n, 0, 255);
+        dd[o + 2] = clamp(dd[o + 2] + n, 0, 255);
+      }
     }
+    dctx.putImageData(did, 0, 0);
   }
-  dctx.putImageData(did, 0, 0);
 
   // page drop shadow: the quad offset a few px, blurred, before the page goes on
   const sx0 = uni(rand, 3, 10), sy0 = uni(rand, 4, 14);
@@ -688,9 +715,10 @@ async function apply(canvas, opts, rand) {
   }
 
   let cv = copyOnto(canvas, bg);          // flatten alpha, never touch the input
+  const images = opts.images || null;     // real background photos: { desk: [..], paper: [..] }
   for (const [name, fn] of ORDER) {
     const p = resolved[name];
-    if (p) cv = fn(cv, p, rand) || cv;
+    if (p) cv = fn(cv, p, rand, images) || cv;
   }
   if (resolved.jpeg) cv = await jpegCycles(cv, resolved.jpeg, rand, bg);
   return cv;

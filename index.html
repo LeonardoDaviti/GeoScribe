@@ -1690,6 +1690,7 @@ const SAMPLE_SENTENCES = [
   };
   const nw = await load('corpus/words.txt', SAMPLE_WORDS, 100);
   const ns = await load('corpus/sentences.txt', SAMPLE_SENTENCES, 50);
+  if (ns && typeof buildRareIndex === 'function') buildRareIndex();
   if (nw || ns) statusEl.textContent =
     `external corpus loaded: ${nw || 'embedded'} words, ${ns || 'embedded'} sentences`;
 })();
@@ -1702,11 +1703,31 @@ function textSplit(text) {
   return h % 20 === 0 ? 'val' : 'train';   // ~5% val
 }
 
+/* long-tail balancing (SynthTIGER-style): natural text underrepresents rare letters
+   (ჭ ყ ჟ …), digits and quote marks, so the model would be weakest exactly on the
+   hard Mkhedruli confusion pairs. A third of sentence draws are steered to sentences
+   containing one of the rarest charset members. */
+let RARE_INDEX = [];
+function buildRareIndex() {
+  const freq = {};
+  for (const s of SAMPLE_SENTENCES) for (const ch of s) if (ch !== ' ') freq[ch] = (freq[ch] || 0) + 1;
+  const rare = Object.entries(freq).sort((a, b) => a[1] - b[1])
+    .slice(0, Math.min(16, Math.ceil(Object.keys(freq).length / 3))).map(e => e[0]);
+  RARE_INDEX = rare.map(ch => ({
+    ch, idx: SAMPLE_SENTENCES.reduce((acc, s, i) => (s.includes(ch) && acc.push(i), acc), []),
+  })).filter(r => r.idx.length);
+}
+buildRareIndex();
+
 function sampleBatchText(base) {
   const drawn = base.handmode ? HAND.drawnWords() : [];
   const pool = SAMPLE_WORDS.concat(drawn, drawn, drawn);
   // 40% full sentences (punctuation + numerals), 60% random 2–5 word lines
   if (Math.random() < 0.4) {
+    if (RARE_INDEX.length && Math.random() < 0.35) {
+      const r = RARE_INDEX[Math.floor(Math.random() * RARE_INDEX.length)];
+      return SAMPLE_SENTENCES[r.idx[Math.floor(Math.random() * r.idx.length)]];
+    }
     return SAMPLE_SENTENCES[Math.floor(Math.random() * SAMPLE_SENTENCES.length)];
   }
   const nw = 2 + Math.floor(Math.random() * 4);
@@ -1738,12 +1759,34 @@ async function applyDegrade(cv, opts, seed) {
   const pool = ['clean', 'scan', 'phone', 'phone-hard', 'photo'];
   const preset = name === 'mix' ? pool[Math.floor(r() * pool.length) % pool.length] : name;
   if (preset === 'clean') return { canvas: cv, preset };
+  const presetOpts = { ...DEGRADE.presets[preset], images: BACKGROUNDS };
   // degrade at FULL render resolution, before the training-height downscale: real
   // phone blur/noise is partially averaged away by resizing, and 1px of blur on a
   // 64px line would eat the strokes. exportTransform then also re-grays chroma noise.
-  const out = await DEGRADE.apply(cv, DEGRADE.presets[preset], r);
+  const out = await DEGRADE.apply(cv, presetOpts, r);
   return { canvas: out, preset };
 }
+
+/* real background photos (optional): drop images in backgrounds/ + list them in
+   backgrounds/manifest.json — blending onto real desk/paper photos closes texture
+   gaps no procedural model can (the single biggest SynthTIGER trick) */
+const BACKGROUNDS = { desk: [], paper: [] };
+(async function loadBackgrounds() {
+  try {
+    const r = await fetch('backgrounds/manifest.json');
+    if (!r.ok) return;
+    const man = await r.json();
+    for (const kind of ['desk', 'paper']) {
+      for (const file of man[kind] || []) {
+        const img = new Image();
+        img.src = 'backgrounds/' + file;
+        await img.decode().then(() => BACKGROUNDS[kind].push(img)).catch(() => {});
+      }
+    }
+    if (BACKGROUNDS.desk.length || BACKGROUNDS.paper.length)
+      console.log(`backgrounds loaded: ${BACKGROUNDS.desk.length} desk, ${BACKGROUNDS.paper.length} paper`);
+  } catch (e) {}
+})();
 
 // downscale to training height + grayscale: full-res RGBA PNGs are ~5x wasted bytes
 // when the training loader immediately resizes to 48–64px anyway
