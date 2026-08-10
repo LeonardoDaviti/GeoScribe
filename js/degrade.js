@@ -142,6 +142,19 @@ function homography(w, h, quad) {
   return s ? [s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], 1] : null;
 }
 
+/* Invert a 3x3 homography (row-major, 9 elements). */
+function invert3(H) {
+  const [a, b, c, d, e, f, g, h, i] = H;
+  const A = e * i - f * h, B = c * h - b * i, C = b * f - c * e;
+  const det = a * A + d * B + g * C;
+  if (Math.abs(det) < 1e-12) return null;
+  return [
+    A / det, B / det, C / det,
+    (f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det,
+    (d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det,
+  ];
+}
+
 /* ---------------- stages ---------------- */
 
 /* 1. lowink — streaky ink fading: multiply ink darkness by a low-freq field.
@@ -198,6 +211,160 @@ function paper(cv, p, rand) {
   }
   ctx.putImageData(id, 0, 0);
   return cv;
+}
+
+/* 2b. scene — "photographed on a desk": the page becomes a rotated/keystoned quad
+       composited over a textured desk surface with a drop shadow along its edges.
+       Unlike `perspective` (which insets to hide wedges), this WANTS the surround
+       visible — that's what a real phone photo of a notebook page looks like. */
+function scene(cv, p, rand) {
+  const w = cv.width, h = cv.height;
+  const a = p.amount;
+
+  // page quad: scaled toward center, slightly rotated, per-corner keystone jitter
+  const s = p.scale === undefined ? uni(rand, 0.80, 0.95) : p.scale;
+  const th = gauss(rand) * 0.035 * a;                      // ±~2-4° camera roll
+  const kx = 0.05 * a * w, ky = 0.09 * a * h;
+  const cx = w / 2, cy = h / 2, cs = Math.cos(th), sn = Math.sin(th);
+  const base = [[-cx * s, -cy * s], [cx * s, -cy * s], [cx * s, cy * s], [-cx * s, cy * s]];
+  const quad = base.map(([x, y]) => [
+    clamp(cx + x * cs - y * sn + gauss(rand) * kx * 0.5, 1, w - 2),
+    clamp(cy + x * sn + y * cs + gauss(rand) * ky * 0.5, 1, h - 2),
+  ]);
+  const H = homography(w, h, quad);
+  const Hi = H && invert3(H);
+  if (!Hi) return cv;
+
+  // desk: dark surface (wood / grey / near-black) with coarse streaky texture
+  const desk = makeCanvas(w, h);
+  const dctx = desk.getContext('2d', { willReadFrequently: true });
+  const kinds = [[92, 62, 38], [70, 70, 74], [34, 32, 30], [120, 104, 84]];
+  const [br, bg2, bb] = kinds[Math.floor(rand() * kinds.length) % kinds.length];
+  dctx.fillStyle = `rgb(${br},${bg2},${bb})`;
+  dctx.fillRect(0, 0, w, h);
+  const tex = noiseField(rand, Math.max(4, Math.round(w / 30)), Math.max(3, Math.round(h / 90)), 1);
+  const did = dctx.getImageData(0, 0, w, h), dd = did.data;
+  for (let y = 0; y < h; y++) {
+    const v = y / (h - 1 || 1);
+    for (let x = 0; x < w; x++) {
+      const o = (y * w + x) * 4;
+      const n = tex(x / (w - 1 || 1), v) * 14 + (rand() - 0.5) * 6;
+      dd[o] = clamp(dd[o] + n, 0, 255);
+      dd[o + 1] = clamp(dd[o + 1] + n, 0, 255);
+      dd[o + 2] = clamp(dd[o + 2] + n, 0, 255);
+    }
+  }
+  dctx.putImageData(did, 0, 0);
+
+  // page drop shadow: the quad offset a few px, blurred, before the page goes on
+  const sx0 = uni(rand, 3, 10), sy0 = uni(rand, 4, 14);
+  dctx.save();
+  dctx.filter = `blur(${uni(rand, 5, 12).toFixed(1)}px)`;
+  dctx.fillStyle = 'rgba(0,0,0,0.35)';
+  dctx.beginPath();
+  quad.forEach(([x, y], i) => i ? dctx.lineTo(x + sx0, y + sy0) : dctx.moveTo(x + sx0, y + sy0));
+  dctx.closePath(); dctx.fill();
+  dctx.restore();
+
+  // inverse-map: dest pixel inside the quad samples the page, outside keeps desk
+  const src = cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  const out = dctx.getImageData(0, 0, w, h), od = out.data;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const den = Hi[6] * x + Hi[7] * y + Hi[8];
+      const sx = (Hi[0] * x + Hi[1] * y + Hi[2]) / den;
+      const sy = (Hi[3] * x + Hi[4] * y + Hi[5]) / den;
+      if (sx < 0 || sy < 0 || sx > w - 1.001 || sy > h - 1.001) continue;
+      const x0 = sx | 0, y0 = sy | 0, tx = sx - x0, ty = sy - y0;
+      const o = (y * w + x) * 4;
+      const i00 = (y0 * w + x0) * 4, i10 = i00 + 4, i01 = i00 + w * 4, i11 = i01 + 4;
+      for (let c = 0; c < 3; c++) {
+        od[o + c] = (src[i00 + c] * (1 - tx) + src[i10 + c] * tx) * (1 - ty)
+                  + (src[i01 + c] * (1 - tx) + src[i11 + c] * tx) * ty;
+      }
+      od[o + 3] = 255;
+    }
+  }
+  dctx.putImageData(out, 0, 0);
+  return desk;
+}
+
+/* 2c. colortemp — white-balance shift: warm tungsten lamp or cool daylight/LED. */
+function colortemp(cv, p, rand) {
+  const t = (p.t === undefined ? uni(rand, 0.04, 0.18) : p.t) * p.amount;
+  const warm = rand() < 0.6;
+  const rGain = warm ? 1 + t : 1 - t * 0.7;
+  const bGain = warm ? 1 - t : 1 + t * 0.8;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  const id = ctx.getImageData(0, 0, cv.width, cv.height), d = id.data;
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = clamp(d[i] * rGain, 0, 255);
+    d[i + 2] = clamp(d[i + 2] * bGain, 0, 255);
+  }
+  ctx.putImageData(id, 0, 0);
+  return cv;
+}
+
+/* 4b. shadowcast — a hard-ish cast shadow (the photographing hand/phone, a shelf):
+       one defined dark shape with a soft edge, much stronger than illumination
+       blobs. Either a bar entering from an edge or a rotated ellipse. */
+function shadowcast(cv, p, rand) {
+  const w = cv.width, h = cv.height;
+  const a = p.amount;
+  const t = makeCanvas(w, h);
+  const c = t.getContext('2d');
+  c.drawImage(cv, 0, 0);
+  c.save();
+  c.filter = `blur(${uni(rand, 6, Math.max(10, h * 0.06)).toFixed(1)}px)`;
+  c.globalAlpha = uni(rand, 0.15, 0.4) * a;
+  c.fillStyle = 'rgb(10,8,6)';
+  if (rand() < 0.5) {
+    // bar from a random edge (phone silhouette at the frame border)
+    const edge = Math.floor(rand() * 4) % 4;
+    const depth = uni(rand, 0.12, 0.4);
+    c.beginPath();
+    if (edge === 0) c.rect(0, 0, w, h * depth);
+    else if (edge === 1) c.rect(0, h * (1 - depth), w, h * depth);
+    else if (edge === 2) c.rect(0, 0, w * depth, h);
+    else c.rect(w * (1 - depth), 0, w * depth, h);
+    c.fill();
+  } else {
+    // rotated ellipse mid-frame (hand/arm shadow)
+    c.translate(uni(rand, 0.2, 0.8) * w, uni(rand, 0.1, 0.9) * h);
+    c.rotate(rand() * Math.PI);
+    c.beginPath();
+    c.ellipse(0, 0, uni(rand, 0.2, 0.5) * w, uni(rand, 0.1, 0.35) * h, 0, 0, Math.PI * 2);
+    c.fill();
+  }
+  c.restore();
+  return t;
+}
+
+/* 4c. glare — specular highlight: glossy paper under a lamp / window reflection. */
+function glare(cv, p, rand) {
+  const w = cv.width, h = cv.height;
+  const a = p.amount;
+  const t = makeCanvas(w, h);
+  const c = t.getContext('2d');
+  c.drawImage(cv, 0, 0);
+  const gx = uni(rand, 0.15, 0.85) * w, gy = uni(rand, 0.1, 0.9) * h;
+  const r = uni(rand, 0.18, 0.55) * Math.max(w, h);
+  const g = c.createRadialGradient(gx, gy, 0, gx, gy, r);
+  const peak = uni(rand, 0.25, 0.6) * a;
+  g.addColorStop(0, `rgba(255,253,244,${peak.toFixed(3)})`);
+  g.addColorStop(0.55, `rgba(255,253,244,${(peak * 0.35).toFixed(3)})`);
+  g.addColorStop(1, 'rgba(255,253,244,0)');
+  c.globalCompositeOperation = 'screen';
+  c.save();
+  c.translate(gx, gy);
+  c.scale(1, uni(rand, 0.4, 1));            // elongated sheen more often than round
+  c.rotate(gauss(rand) * 0.4);
+  c.translate(-gx, -gy);
+  c.fillStyle = g;
+  c.fillRect(0, 0, w, h);
+  c.restore();
+  c.globalCompositeOperation = 'source-over';
+  return t;
 }
 
 /* 3. perspective — subtle 4-corner homography, inverse-mapped with bilinear
@@ -449,6 +616,22 @@ const presets = {
     jpeg:         { rounds: [1, 2.4], qlo: 0.55, qhi: 0.8 },
   },
 
+  // simulated photo shoot: page on a desk at a real angle, cast shadows, glare,
+  // lamp/daylight white balance — the closest to "I photographed my notebook"
+  photo: {
+    oneOf:        [['defocus', 'motionblur']],
+    scene:        { amount: [0.5, 1.0], scale: [0.80, 0.95] },
+    colortemp:    [0.3, 1.0],
+    illumination: { amount: [0.3, 0.75], blobs: [0, 2.4], grad: [0.1, 0.28], vignette: [0.12, 0.35] },
+    shadowcast:   [0.35, 1.0],
+    glare:        [0, 0.8],
+    defocus:      { amount: 1, px: [0.4, 1.3] },
+    motionblur:   { amount: 1, len: [1.0, 2.8] },
+    noise:        { amount: [0.3, 0.7], sigma: [4, 10], shadow: [0.7, 1.6] },
+    downup:       { scale: [0.5, 0.8] },
+    jpeg:         { rounds: [1, 2], qlo: 0.6, qhi: 0.82 },
+  },
+
   // worst realistic case: dim room, shaky hand, worn pen, re-shared image
   'phone-hard': {
     oneOf:        [['defocus', 'motionblur']],
@@ -469,8 +652,12 @@ const presets = {
 const ORDER = [
   ['lowink', lowink],
   ['paper', paper],
+  ['scene', scene],
   ['perspective', perspective],
+  ['colortemp', colortemp],
   ['illumination', illumination],
+  ['shadowcast', shadowcast],
+  ['glare', glare],
   ['defocus', defocus],
   ['motionblur', motionblur],
   ['downup', downup],
@@ -515,7 +702,7 @@ global.DEGRADE = {
   presets,
   presetNames: Object.keys(presets),
   // exposed for tests / bespoke pipelines
-  _stages: { lowink, paper, perspective, illumination, defocus, motionblur, downup, noise, banding, jpegCycles },
+  _stages: { lowink, paper, scene, perspective, colortemp, illumination, shadowcast, glare, defocus, motionblur, downup, noise, banding, jpegCycles },
 };
 
 })(typeof window !== 'undefined' ? window : globalThis);

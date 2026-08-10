@@ -308,7 +308,8 @@
             <option value="scan">scan — light noise, faint bands, jpeg</option>
             <option value="phone">phone — perspective, uneven light, blur, noise</option>
             <option value="phone-hard">phone-hard — dim room, shaky hand, worn pen</option>
-            <option value="mix">mix — random preset per sample (25% each)</option>
+            <option value="photo">photo — page on desk, angle, cast shadow, glare</option>
+            <option value="mix">mix — random preset per sample (20% each)</option>
           </select></div>
         <p class="status">preview canvas always renders full-res; these apply to batch export only.
           pages ignore the height downscale (boxes are in full-render pixels) and carry
@@ -1733,7 +1734,7 @@ async function applyDegrade(cv, opts, seed) {
   const name = opts.degrade || 'clean';
   if (name === 'clean' || !window.DEGRADE) return { canvas: cv, preset: 'clean' };
   const r = mulberry32((seed ^ 0x9e3779b9) >>> 0);
-  const pool = ['clean', 'scan', 'phone', 'phone-hard'];
+  const pool = ['clean', 'scan', 'phone', 'phone-hard', 'photo'];
   const preset = name === 'mix' ? pool[Math.floor(r() * pool.length) % pool.length] : name;
   if (preset === 'clean') return { canvas: cv, preset };
   // degrade at FULL render resolution, before the training-height downscale: real
@@ -1792,9 +1793,9 @@ async function generatePageSample(base, off, opts) {
       text: page.text, split: textSplit(page.text), seed: p.seed,
       source: p._source || 'font', writer: p._writer || null, font: p._usedFont,
       degrade: deg.preset,
-      // phone presets warp geometry (homography): boxes then hold for the pre-warp
-      // image only — train detectors on clean/scan pages, recognizers on any
-      boxes_exact: !(deg.preset === 'phone' || deg.preset === 'phone-hard'),
+      // phone/photo presets warp geometry (homography): boxes then hold for the
+      // pre-warp image only — train detectors on clean/scan pages, recognizers on any
+      boxes_exact: !['phone', 'phone-hard', 'photo'].includes(deg.preset),
       width: page.width, height: page.height,
       lines: page.lines.map(l => ({
         text: l.text, box: intBox(l.box),
