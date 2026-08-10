@@ -68,15 +68,24 @@ const { default: puppeteer } = await import('puppeteer');
 await new Promise(r => server.listen(PORT, r));
 fs.mkdirSync(path.join(OUT, 'images'), { recursive: true });
 
-const browser = await puppeteer.launch();
-const page = await browser.newPage();
-if (writersPayload) {
-  await page.evaluateOnNewDocument(payload => {
-    localStorage.setItem('geoscribe_hand_profiles_v2', payload);
-  }, writersPayload);
+let browser, page;
+async function setupPage() {
+  const p = await browser.newPage();
+  if (writersPayload) {
+    await p.evaluateOnNewDocument(payload => {
+      localStorage.setItem('geoscribe_hand_profiles_v2', payload);
+    }, writersPayload);
+  }
+  await p.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle0' });
+  await p.waitForFunction(() => window.GEOSCRIBE && window.GEOSCRIBE.ready(), { timeout: 30000 });
+  return p;
 }
-await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle0' });
-await page.waitForFunction(() => window.GEOSCRIBE && window.GEOSCRIBE.ready(), { timeout: 30000 });
+async function recycleBrowser() {
+  if (browser) await browser.close().catch(() => {});
+  browser = await puppeteer.launch();
+  page = await setupPage();
+}
+await recycleBrowser();
 
 // --resume: continue an interrupted run — count finished images, append to metadata.
 // (Without it a restart would truncate metadata.jsonl and orphan every existing image.)
@@ -94,7 +103,23 @@ const metaStream = fs.createWriteStream(path.join(OUT, 'metadata.jsonl'), { flag
 let bytes = 0;
 const t0 = Date.now();
 for (let i = start; i < N; i++) {
-  const s = await page.evaluate(o => window.GEOSCRIBE.renderSample(o), overrides);
+  // the renderer accumulates memory over tens of thousands of evaluate round-trips
+  // and eventually crashes — recycle proactively, and relaunch + retry on failure
+  if (i > start && (i - start) % 10000 === 0) {
+    console.log(`recycling browser at ${i} (renderer memory hygiene)`);
+    await recycleBrowser();
+  }
+  let s;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      s = await page.evaluate(o => window.GEOSCRIBE.renderSample(o), overrides);
+      break;
+    } catch (e) {
+      if (attempt >= 2) throw e;
+      console.warn(`sample ${i} failed (${String(e.message).split('\n')[0]}); relaunching browser`);
+      await recycleBrowser();
+    }
+  }
   const fname = `${String(i).padStart(6, '0')}.${s.ext}`;
   const buf = Buffer.from(s.b64, 'base64');
   fs.writeFileSync(path.join(OUT, 'images', fname), buf);
