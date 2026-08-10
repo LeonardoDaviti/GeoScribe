@@ -115,6 +115,111 @@
   .footer-note { color: var(--muted); font-size: 12px; line-height: 1.6; max-width: 720px; }
   .footer-note a { color: var(--accent2); }
   progress { width: 100%; accent-color: var(--accent); }
+
+  /* ================= Mobile app shell =================
+     Desktop keeps the two-column generator-first layout untouched. Below 900px the
+     page becomes a two-tab app (Draw / Generate) whose default screen is the drawing
+     board, because on a phone this is a data-collection tool, not a parameter studio.
+     Everything is driven by body[data-view] + a fixed bottom tab bar; no DOM is moved,
+     so every existing element id keeps working exactly as before. */
+  /* was inline on #drawboard; moved here so media queries can actually override it */
+  #drawboard { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+  #tabbar { display: none; }
+  #drawhud { display: none; }
+  #drawtoast {
+    position: fixed; left: 50%; bottom: 80px; transform: translate(-50%, 12px);
+    background: #1f8a4c; color: #fff; font-size: 14px; font-weight: 600;
+    padding: 10px 18px; border-radius: 999px; z-index: 90; pointer-events: none;
+    opacity: 0; transition: opacity .18s, transform .18s; box-shadow: 0 8px 24px rgba(0,0,0,.45);
+  }
+  #drawtoast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  @media (max-width: 900px) {
+    body { padding-bottom: calc(58px + env(safe-area-inset-bottom, 0px)); }
+    /* grid items default to min-width:auto, so the 33-chip nowrap letter strip would
+       otherwise blow the whole column out to its max-content width (~1500px) */
+    .layout > .controls, .layout > .stage { min-width: 0; }
+    #lettergrid, #samplegallery, #canvasscroll, #drawboard { max-width: 100%; }
+
+    /* ---- bottom tab bar ---- */
+    #tabbar {
+      display: grid; grid-template-columns: 1fr 1fr;
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 70;
+      background: var(--panel); border-top: 1px solid var(--border);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    #tabbar .tab {
+      background: none; border: none; color: var(--muted); font: inherit;
+      font-size: 11px; font-weight: 600; letter-spacing: .4px; cursor: pointer;
+      padding: 8px 0 10px; display: flex; flex-direction: column; align-items: center; gap: 2px;
+    }
+    #tabbar .tab i { font-style: normal; font-size: 20px; line-height: 1; }
+    #tabbar .tab.active { color: var(--accent); }
+
+    /* ---- view switching ---- */
+    body[data-view="draw"] header,
+    body[data-view="draw"] .controls,
+    body[data-view="draw"] .presets,
+    body[data-view="draw"] .canvas-wrap,
+    body[data-view="draw"] .stage > .footer-note { display: none !important; }
+    body[data-view="draw"] .stage { padding: 0; gap: 0; }
+    body[data-view="draw"] #drawboard {
+      border: none; border-radius: 0; padding: 10px 10px 0; background: var(--bg);
+    }
+    body[data-view="generate"] #drawboard { display: none !important; }
+
+    /* ---- drawing board, phone form ---- */
+    #drawhead { margin-bottom: 8px !important; }
+    #drawhead .headline { display: none; }
+    #closedraw { display: none; }
+    #drawhud { display: block; margin-bottom: 10px; }
+    #drawcols { display: block !important; }
+    #drawmain { width: 100%; }
+    #drawside .footer-note, #drawside #targetline { display: none; }
+    #drawside { max-width: none !important; margin-top: 14px; }
+    #wordrow { flex-wrap: wrap; }
+    #wordrow input { max-width: none !important; flex: 1 1 100%; }
+
+    /* letter picker must never eat the viewport: one swipeable row */
+    #lettergrid {
+      flex-wrap: nowrap !important; overflow-x: auto; overscroll-behavior-x: contain;
+      margin-bottom: 10px !important; padding-bottom: 4px;
+      scrollbar-width: none; -webkit-overflow-scrolling: touch;
+    }
+    #lettergrid::-webkit-scrollbar { display: none; }
+    #lettergrid .chip { flex: 0 0 auto; font-size: 19px; padding: 7px 13px; }
+    #samplegallery {
+      flex-wrap: nowrap !important; overflow-x: auto; padding-bottom: 4px;
+      scrollbar-width: none; max-width: none !important;
+    }
+    #samplegallery::-webkit-scrollbar { display: none; }
+    #samplegallery > div { flex: 0 0 auto; }
+
+    /* save stays reachable with the thumb, always above the tab bar */
+    #drawactions {
+      position: sticky; bottom: calc(66px + env(safe-area-inset-bottom, 0px)); z-index: 40;
+      margin-top: 10px !important; padding: 8px 0 4px; background: var(--bg);
+    }
+    #drawactions .btn { padding: 15px 12px; font-size: 15px; }
+    #savestroke { flex: 2 1 0 !important; }
+  }
+
+  /* ---- mobile heads-up display: target glyph + 33-letter progress + share CTA ---- */
+  #drawhud .hudrow { display: flex; align-items: center; gap: 12px; }
+  #drawhud .hudtarget {
+    flex: 0 0 76px; height: 76px; display: flex; align-items: center; justify-content: center;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 14px;
+    font-family: 'Noto Sans Georgian', sans-serif; color: var(--accent); line-height: 1;
+  }
+  #drawhud .hudmeta { flex: 1 1 auto; min-width: 0; }
+  #drawhud .hudline {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+    font-size: 14px; margin-bottom: 6px;
+  }
+  #drawhud .hudbar { height: 8px; border-radius: 99px; background: var(--panel2); overflow: hidden; }
+  #drawhud .hudbar > div { height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+  #drawhud .hudsub { margin-top: 6px; }
+  #sharebar { margin-top: 12px; padding: 14px; font-size: 15px; }
 </style>
 </head>
 <body>
@@ -268,6 +373,7 @@
         <div class="knob"><label>Cursive joining (0 = formal, 1 = diary) <span class="val" id="v_connectprob">0.35</span></label>
           <input type="range" id="connectprob" min="0" max="1" step="0.05" value="0.35"></div>
         <button class="btn secondary" id="opendraw" style="margin-top:6px">✍ Open drawing board</button>
+        <button class="btn blue" id="shareprofile" style="margin-top:8px">📤 Share writer profile</button>
         <div class="btnrow">
           <button class="btn secondary" id="exportprofile">⬆ Export JSON</button>
           <button class="btn secondary" id="importprofile">⬇ Import JSON</button>
@@ -342,15 +448,29 @@
       <span class="chip" data-preset="rushed">rushed scrawl</span>
       <span class="chip" data-preset="drunk">chaotic</span>
     </div>
-    <div id="drawboard" style="display:none; background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:12px; flex-wrap:wrap;">
-        <strong style="font-size:14px">Drawing board · writer: <span id="drawwriter" style="color:var(--accent)"></span></strong>
+    <div id="drawboard" style="display:none">
+      <div id="drawhead" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:12px; flex-wrap:wrap;">
+        <strong class="headline" style="font-size:14px">Drawing board · writer: <span id="drawwriter" style="color:var(--accent)"></span></strong>
         <div style="display:flex; gap:8px; align-items:center;">
           <span class="chip active" id="modeletters">letters</span>
           <span class="chip" id="modewords">words</span>
           <span class="chip" id="modesentences">sentences</span>
           <button class="btn secondary" id="closedraw" style="width:auto; padding:6px 14px">✕ close</button>
         </div>
+      </div>
+      <div id="drawhud">
+        <div class="hudrow">
+          <div class="hudtarget"><span id="mtarget" style="font-size:44px">ა</span></div>
+          <div class="hudmeta">
+            <div class="hudline">
+              <strong id="mprogtext">0/33 letters</strong>
+              <span class="status" id="mtargetcount"></span>
+            </div>
+            <div class="hudbar"><div id="mprogfill"></div></div>
+            <div class="status hudsub" id="mwriter"></div>
+          </div>
+        </div>
+        <button class="btn blue" id="sharebar" style="display:none">📤 Share my handwriting profile</button>
       </div>
       <div id="wordrow" style="display:none; margin-bottom:10px; gap:8px; align-items:center;">
         <input type="text" id="wordinput" placeholder="type a Georgian word or sentence to draw…"
@@ -359,8 +479,8 @@
         <button class="btn secondary" id="randword" style="width:auto; padding:8px 14px">🎲 random</button>
       </div>
       <div id="lettergrid" style="display:flex; flex-wrap:wrap; gap:5px; margin-bottom:14px;"></div>
-      <div style="display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start;">
-        <div>
+      <div id="drawcols" style="display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start;">
+        <div id="drawmain">
           <div id="canvasscroll" style="overflow-x:auto; max-width:100%; border-radius:10px;">
             <canvas id="drawcanvas" width="340" height="340" style="background:#fdfcf8; border-radius:10px; cursor:crosshair; touch-action:none; display:block;"></canvas>
           </div>
@@ -369,7 +489,7 @@
             <button class="btn secondary" id="panr" style="width:auto; padding:8px 18px">pan ▶</button>
             <span class="status">tip: rotate your phone for more width</span>
           </div>
-          <div style="display:flex; gap:8px; margin-top:10px;">
+          <div id="drawactions" style="display:flex; gap:8px; margin-top:10px;">
             <button class="btn" id="savestroke" style="width:auto; flex:1">💾 Save sample</button>
             <button class="btn secondary" id="undostroke" style="width:auto">↩ undo</button>
             <button class="btn secondary" id="clearstroke" style="width:auto">✕ clear</button>
@@ -377,8 +497,8 @@
           <p class="status" id="galcount" style="margin-top:12px"></p>
           <div id="samplegallery" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:6px; max-width:680px;"></div>
         </div>
-        <div style="max-width:330px">
-          <p style="font-size:34px; margin-bottom:6px">target: <span id="targetletter" style="font-family:'Noto Sans Georgian'; color:var(--accent)">ა</span>
+        <div id="drawside" style="max-width:330px">
+          <p id="targetline" style="font-size:34px; margin-bottom:6px">target: <span id="targetletter" style="font-family:'Noto Sans Georgian'; color:var(--accent)">ა</span>
             <span class="status" id="targetcount"></span></p>
           <p class="footer-note" style="margin-bottom:8px">
             Draw between the guide lines (baseline is the lower one). Strokes are captured as
@@ -406,6 +526,12 @@
     </p>
   </main>
 </div>
+
+<div id="drawtoast" role="status" aria-live="polite"></div>
+<nav id="tabbar" aria-label="main views">
+  <button class="tab active" id="tabdraw"><i>✍</i>Draw</button>
+  <button class="tab" id="tabgen"><i>⚙</i>Generate</button>
+</nav>
 
 <script>
 'use strict';
@@ -1276,12 +1402,14 @@ document.getElementById('download').addEventListener('click', () => {
   a.click();
 });
 
-/* presets */
-document.querySelectorAll('.chip').forEach(chip => {
+/* presets — scoped to .presets: the drawing board reuses .chip for mode tabs and the
+   letter grid, and an unscoped query used to steal their clicks */
+document.querySelectorAll('.presets .chip').forEach(chip => {
   chip.addEventListener('click', () => {
-    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    document.querySelectorAll('.presets .chip').forEach(c => c.classList.remove('active'));
     chip.classList.add('active');
     const pr = PRESETS[chip.dataset.preset];
+    if (!pr) return;
     for (const [k, v] of Object.entries(pr)) {
       const el = document.getElementById(k);
       if (el) el.value = v;
@@ -1341,6 +1469,7 @@ function refreshWriterUI() {
   }
   document.getElementById('drawwriter').textContent = HAND.current;
   handStatus();
+  updateProgress();
 }
 function drawGuides() {
   dctx.clearRect(0, 0, dc.width, dc.height);
@@ -1463,7 +1592,34 @@ function buildLetterGrid() {
   }
   document.getElementById('targetletter').textContent = curKey;
   document.getElementById('targetcount').textContent = `(${sampleCount(curKey)} saved)`;
+  // mobile HUD mirrors the target so it sits above the canvas without moving the DOM
+  const mt = document.getElementById('mtarget');
+  mt.textContent = curKey;
+  mt.style.fontSize = curKey.length > 8 ? '17px' : curKey.length > 3 ? '24px' : curKey.length > 1 ? '32px' : '44px';
+  document.getElementById('mtargetcount').textContent = `${sampleCount(curKey)} saved`;
+  updateProgress();
+  // keep the swipeable letter strip centred on what you're drawing (auto-advance)
+  const act = grid.querySelector('.chip.active');
+  if (act && act.scrollIntoView) act.scrollIntoView({ inline: 'center', block: 'nearest' });
   buildGallery();
+}
+
+/* letters covered / 33 — the number that decides when the share CTA appears */
+function lettersCovered(name) {
+  const wr = HAND.ensure(name || HAND.current);
+  return MKHEDRULI.filter(ch => wr.letters[ch] && wr.letters[ch].samples.length).length;
+}
+const SHARE_MIN_LETTERS = 10;
+function updateProgress() {
+  const done = lettersCovered();
+  const total = MKHEDRULI.length;
+  const s = HAND.stats(HAND.current);
+  document.getElementById('mprogtext').textContent = `${done}/${total} letters`;
+  document.getElementById('mprogfill').style.width = `${(done / total * 100).toFixed(1)}%`;
+  document.getElementById('mwriter').textContent =
+    `writer “${HAND.current}” · ${s.samples} sample(s)` +
+    (done < SHARE_MIN_LETTERS ? ` · ${SHARE_MIN_LETTERS - done} more letters to unlock sharing` : '');
+  document.getElementById('sharebar').style.display = done >= SHARE_MIN_LETTERS ? '' : 'none';
 }
 function selectKey(key) {
   curKey = key; rawStrokes = []; liveStroke = null;
@@ -1533,9 +1689,12 @@ dc.addEventListener('pointercancel', endStroke);
 
 document.getElementById('savestroke').addEventListener('click', () => {
   if (!rawStrokes.length) { document.getElementById('drawstatus').textContent = 'nothing drawn yet'; return; }
+  const saved = curKey;
   HAND.addSample(HAND.current, storeKind(), curKey, rawStrokes, dc.height);
   rawStrokes = [];
   document.getElementById('drawstatus').textContent = `saved ${curKey} ✓`;
+  toast(`saved “${saved}” ✓`);
+  if (navigator.vibrate) { try { navigator.vibrate(12); } catch (e) {} }
   refreshWriterUI();
   if (drawMode === 'letters' && document.getElementById('autoadvance').checked) {
     // next letter with fewest samples (fills all 33 first, then repetitions)
@@ -1546,11 +1705,19 @@ document.getElementById('savestroke').addEventListener('click', () => {
 });
 document.getElementById('undostroke').addEventListener('click', () => { rawStrokes.pop(); drawGuides(); });
 document.getElementById('clearstroke').addEventListener('click', () => { rawStrokes = []; liveStroke = null; drawGuides(); });
-document.getElementById('opendraw').addEventListener('click', () => {
+function openDrawBoard() {
   drawboard.style.display = 'block';
   document.fonts.ready.then(() => { refreshWriterUI(); buildLetterGrid(); drawGuides(); });
+}
+document.getElementById('opendraw').addEventListener('click', () => {
+  openDrawBoard();
+  if (isMobile()) setView('draw');
+  else drawboard.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
-document.getElementById('closedraw').addEventListener('click', () => { drawboard.style.display = 'none'; });
+document.getElementById('closedraw').addEventListener('click', () => {
+  if (isMobile()) setView('generate');
+  else drawboard.style.display = 'none';
+});
 document.getElementById('wipeprofile').addEventListener('click', () => {
   if (!confirm(`Delete ALL samples of writer "${HAND.current}"?`)) return;
   HAND.writers[HAND.current] = { letters: {}, words: {} };
@@ -1627,6 +1794,78 @@ document.getElementById('importfile').addEventListener('change', e => {
   });
   e.target.value = '';
 });
+/* ---- one-tap sharing: this is how contributor profiles reach the maintainer ----
+   Web Share API level 2 (files) covers iOS Safari + Android Chrome, which is where the
+   drawing actually happens; anything else falls back to the plain download. */
+function profileBlob() {
+  return new Blob([JSON.stringify({ format: 'geoscribe-writers-v2', writers: HAND.writers })],
+    { type: 'application/json' });
+}
+function profileFilename() {
+  const safe = (HAND.current || 'writer').replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 32) || 'writer';
+  return `geoscribe_${safe}.json`;
+}
+function shareMsg(m) {
+  document.getElementById('drawstatus').textContent = m;
+  document.getElementById('handstatus').textContent = m;
+  toast(m);
+}
+async function shareProfile() {
+  const name = profileFilename();
+  const blob = profileBlob();
+  const s = HAND.stats(HAND.current);
+  const text = `GeoScribe handwriting profile · writer "${HAND.current}" · `
+    + `${lettersCovered()}/33 letters, ${s.words} words, ${s.samples} samples`;
+  if (navigator.share && navigator.canShare) {
+    try {
+      const file = new File([blob], name, { type: 'application/json' });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'GeoScribe writer profile', text });
+        shareMsg('shared ✓ thank you!');
+        return;
+      }
+    } catch (err) {
+      if (err && err.name === 'AbortError') { shareMsg('share cancelled'); return; }
+      /* anything else: fall through to download */
+    }
+  }
+  const a = document.createElement('a');
+  a.download = name;
+  a.href = URL.createObjectURL(blob);
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  shareMsg(`saved ${name} — send it to the maintainer`);
+}
+document.getElementById('shareprofile').addEventListener('click', shareProfile);
+document.getElementById('sharebar').addEventListener('click', shareProfile);
+
+/* ---- mobile app shell: bottom tab bar, drawing board is the default screen ---- */
+const MOBILE_MQ = window.matchMedia('(max-width: 900px)');
+const isMobile = () => MOBILE_MQ.matches;
+let toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById('drawtoast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1600);
+}
+function setView(v) {
+  document.body.dataset.view = v;
+  document.getElementById('tabdraw').classList.toggle('active', v === 'draw');
+  document.getElementById('tabgen').classList.toggle('active', v === 'generate');
+  if (v === 'draw') openDrawBoard();
+  window.scrollTo(0, 0);
+}
+document.getElementById('tabdraw').addEventListener('click', () => setView('draw'));
+document.getElementById('tabgen').addEventListener('click', () => setView('generate'));
+MOBILE_MQ.addEventListener('change', e => {
+  if (e.matches) setView(drawboard.style.display === 'none' ? 'generate' : 'draw');
+});
+// desktop keeps the generator-first layout; phones open straight into the board
+if (isMobile()) setView('draw');
+else document.body.dataset.view = 'generate';
+
 document.getElementById('handmode').addEventListener('change', scheduleRender);
 refreshWriterUI();
 
